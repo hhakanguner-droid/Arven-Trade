@@ -1,16 +1,16 @@
 """Runtime hardening for Phase 10 KAP alert semantics and state migration.
 
-The Phase 10 alert service intentionally keeps its public API stable.  This module
+The Phase 10 alert service intentionally keeps its public API stable. This module
 installs narrowly-scoped semantic/state fixes on that module during package import
 so existing callers and direct imports continue to use the same service classes.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Any
 
 
+_HARDENING_VERSION = "phase10-round14"
 _COMPANY_ACTOR_PREFIXES = (
     "sirketimiz",
     "firmamiz",
@@ -34,11 +34,42 @@ _PROPERTY_RIGHT_TYPE_STEMS = (
     "kaynak",
     "mecra",
 )
+_GENERIC_SPLIT_CONTEXT_STEMS = (
+    "islem",
+    "aciklama",
+    "duyuru",
+    "bildirim",
+    "hakkinda",
+    "iliskin",
+)
+_OBJECT_CASE_SUFFIX_TOKENS = {"i", "yi", "u", "yu", "ni", "nu"}
+
+
+def _mark_hardened(function: Any, *, original: Any | None = None) -> Any:
+    function._phase10_hardening_version = _HARDENING_VERSION
+    if original is not None:
+        function._phase10_original = original
+    return function
+
+
+def _is_hardened(function: Any) -> bool:
+    return getattr(function, "_phase10_hardening_version", None) == _HARDENING_VERSION
 
 
 def install(service: Any) -> None:
-    """Install the final Phase 10 semantic/state hardening exactly once."""
-    if getattr(service, "_PHASE10_HARDENING_INSTALLED", False):
+    """Install the final Phase 10 semantic/state hardening idempotently.
+
+    Do not trust a module-level boolean alone: ``importlib.reload(service)`` keeps
+    arbitrary names in the module dictionary while recreating the functions and
+    classes. Function-level version markers let an explicit reinstall repair a
+    hot-reloaded service module without wrapping already-patched functions twice.
+    """
+    if (
+        _is_hardened(getattr(service, "_event_term_matches", None))
+        and _is_hardened(getattr(service, "_satin_alma_is_acquisition", None))
+        and _is_hardened(getattr(service.AlertStateStore, "_load_unlocked", None))
+    ):
+        service._PHASE10_HARDENING_INSTALLED = _HARDENING_VERSION
         return
 
     def _is_company_actor_token(token: str) -> bool:
@@ -94,7 +125,19 @@ def install(service: Any) -> None:
         for index, token in enumerate(tokens):
             if not token.startswith("devral"):
                 continue
+
             nearby = service._nearby_tokens(tokens, index, radius=4)
+            before = tokens[max(0, index - 6) : index]
+            immediate_object = before[-1] if before else ""
+
+            # Turkish role-transfer phrasing places the grammatical object right
+            # before devralmak: "iştirak yönetimini devraldı", "görevini devraldı".
+            # That explicit management/authority object outranks nearby entity nouns.
+            if immediate_object and service._token_has_stem(
+                immediate_object, service._GOVERNANCE_TRANSFER_STEMS
+            ):
+                continue
+
             governance_context = any(
                 service._token_has_stem(item, service._GOVERNANCE_TRANSFER_STEMS)
                 for item in nearby
@@ -108,7 +151,6 @@ def install(service: Any) -> None:
                 continue
             if strong_target or any(_is_acquisition_target_token(item) for item in nearby):
                 return True
-            before = tokens[max(0, index - 6) : index]
             if service._looks_like_named_company_target(before):
                 return True
             if (
@@ -172,6 +214,22 @@ def install(service: Any) -> None:
                 return True
         return False
 
+    def _has_non_corporate_split_context(tokens: list[str]) -> bool:
+        return any(
+            service._token_has_stem(item, service._NON_CORPORATE_COMBINATION_STEMS)
+            or item.startswith(_DEBT_REPURCHASE_STEMS)
+            or item.startswith(("odeme", "taksit", "alacak", "borclu"))
+            for item in tokens
+        )
+
+    def _is_explicit_generic_split_subject(tokens: list[str], index: int, token: str) -> bool:
+        if index != 0 or not token.startswith("bolunme"):
+            return False
+        trailing = tokens[index + 1 :]
+        if not trailing:
+            return True
+        return all(item.startswith(_GENERIC_SPLIT_CONTEXT_STEMS) for item in trailing)
+
     def _bolunme_is_corporate(text: str) -> bool:
         tokens = service.re.findall(r"\w+", text)
         for index, token in enumerate(tokens):
@@ -182,6 +240,7 @@ def install(service: Any) -> None:
                 service._token_has_stem(item, service._NON_CORPORATE_COMBINATION_STEMS)
                 for item in nearby
             )
+            non_corporate = _has_non_corporate_split_context(nearby)
             corporate = any(
                 service._token_has_stem(item, service._CORPORATE_EVENT_CONTEXT_STEMS)
                 for item in nearby
@@ -212,12 +271,22 @@ def install(service: Any) -> None:
             ):
                 if corporate_count >= 2 or qualified_split:
                     return True
-                if operational:
-                    continue
                 if corporate:
                     return True
+                if _is_explicit_generic_split_subject(tokens, index, token) and not non_corporate:
+                    return True
+                if operational or non_corporate:
+                    continue
                 continue
         return False
+
+    def _named_company_before_is_target(before: list[str], purchase_token: str) -> bool:
+        if not service._looks_like_named_company_target(before):
+            return False
+        suffix = before[-1] if before else ""
+        if suffix in _OBJECT_CASE_SUFFIX_TOKENS:
+            return True
+        return service._purchase_form_can_name_target(purchase_token)
 
     def _satin_alma_is_acquisition(text: str) -> bool:
         tokens = service.re.findall(r"\w+", text)
@@ -228,8 +297,11 @@ def install(service: Any) -> None:
             purchase_token = tokens[index + 1]
             before = tokens[max(0, index - 6) : index]
 
-            # Explicit named-company evidence is stronger than sector/procurement words.
-            if service._looks_like_named_company_target(before):
+            # Case-marked named companies are targets in accusative forms (A.Ş.'yi
+            # satın aldı) and in noun/passive purchase forms (A.Ş.'nin satın
+            # alınması). In active relative clauses (A.Ş.'nin satın aldığı makine)
+            # the named company is the buyer, not the acquisition target.
+            if _named_company_before_is_target(before, purchase_token):
                 return True
 
             before_decision: bool | None = None
@@ -264,6 +336,15 @@ def install(service: Any) -> None:
                 return True
         return False
 
+    def _is_property_right_noun(token: str) -> bool:
+        # "hakkında" is a ubiquitous topic suffix and must not count as the noun
+        # "hak/hakkı". Keep only actual right-noun inflections used in KAP prose.
+        if token.startswith(("hakkind", "hakkiniz", "hakkimiz")):
+            return False
+        return token == "hak" or token.startswith(
+            ("hakki", "hakkin", "hakka", "hakta", "haktan", "hakla")
+        )
+
     def _tesis_is_operational(text: str) -> bool:
         tokens = service.re.findall(r"\w+", text)
         for index, token in enumerate(tokens):
@@ -275,7 +356,7 @@ def install(service: Any) -> None:
                 for item in nearby
             ):
                 continue
-            has_right_noun = any(item.startswith("hak") for item in nearby)
+            has_right_noun = any(_is_property_right_noun(item) for item in nearby)
             has_property_right_type = any(
                 item.startswith(_PROPERTY_RIGHT_TYPE_STEMS) for item in nearby
             )
@@ -303,7 +384,28 @@ def install(service: Any) -> None:
                 return True
         return False
 
-    def _canonicalize_records(records: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
+    current_event_term_matches = service._event_term_matches
+    original_event_term_matches = getattr(
+        current_event_term_matches, "_phase10_original", current_event_term_matches
+    )
+
+    def _event_term_matches(text: str, term: str) -> bool:
+        normalized = service._normalize_event_text(term)
+        if normalized == "pay alim satim":
+            # Productive Turkish suffixes attach to satım: satımı, satımına,
+            # satımının. Preserve spaced and hyphenated KAP forms.
+            return (
+                service.re.search(
+                    r"(?<!\w)pay\s+alim(?:\s*-\s*|\s+)satim\w*",
+                    text,
+                )
+                is not None
+            )
+        return original_event_term_matches(text, term)
+
+    def _canonicalize_records(
+        records: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], bool]:
         chosen: dict[str, dict[str, Any]] = {}
         order: list[str] = []
         changed = False
@@ -324,7 +426,10 @@ def install(service: Any) -> None:
                 chosen[canonical_id] = item
         return [chosen[key] for key in order], changed
 
-    original_load_unlocked = service.AlertStateStore._load_unlocked
+    current_load_unlocked = service.AlertStateStore._load_unlocked
+    original_load_unlocked = getattr(
+        current_load_unlocked, "_phase10_original", current_load_unlocked
+    )
 
     def _load_unlocked(self: Any) -> dict[str, Any]:
         payload = original_load_unlocked(self)
@@ -332,7 +437,22 @@ def install(service: Any) -> None:
         seen = list(dict.fromkeys(service._canonical_alert_id(str(item)) for item in seen_raw))
         pending, pending_changed = _canonicalize_records(list(payload["pending"]))
         history, history_changed = _canonicalize_records(list(payload["history"]))
-        changed = seen != seen_raw or pending_changed or history_changed
+
+        # A disclosure that already reached delivered history must never remain in
+        # the retryable outbox after legacy share-class IDs collapse to one KAP ID.
+        history_ids = {str(item.get("alert_id", "")) for item in history}
+        filtered_pending = [
+            item for item in pending if str(item.get("alert_id", "")) not in history_ids
+        ]
+        pending_history_changed = len(filtered_pending) != len(pending)
+        pending = filtered_pending
+
+        changed = (
+            seen != seen_raw
+            or pending_changed
+            or history_changed
+            or pending_history_changed
+        )
         normalized = {
             "version": payload["version"],
             "seen_ids": seen,
@@ -344,13 +464,20 @@ def install(service: Any) -> None:
             self._save_unlocked(normalized)
         return normalized
 
-    service._is_acquisition_target_token = _is_acquisition_target_token
-    service._devir_has_acquisition_context = _devir_has_acquisition_context
-    service._devralma_has_acquisition_context = _devralma_has_acquisition_context
-    service._birlesme_is_corporate = _birlesme_is_corporate
-    service._bolunme_is_corporate = _bolunme_is_corporate
-    service._satin_alma_is_acquisition = _satin_alma_is_acquisition
-    service._tesis_is_operational = _tesis_is_operational
-    service._share_repurchase_matches = _share_repurchase_matches
-    service.AlertStateStore._load_unlocked = _load_unlocked
-    service._PHASE10_HARDENING_INSTALLED = True
+    service._is_acquisition_target_token = _mark_hardened(_is_acquisition_target_token)
+    service._devir_has_acquisition_context = _mark_hardened(_devir_has_acquisition_context)
+    service._devralma_has_acquisition_context = _mark_hardened(
+        _devralma_has_acquisition_context
+    )
+    service._birlesme_is_corporate = _mark_hardened(_birlesme_is_corporate)
+    service._bolunme_is_corporate = _mark_hardened(_bolunme_is_corporate)
+    service._satin_alma_is_acquisition = _mark_hardened(_satin_alma_is_acquisition)
+    service._tesis_is_operational = _mark_hardened(_tesis_is_operational)
+    service._share_repurchase_matches = _mark_hardened(_share_repurchase_matches)
+    service._event_term_matches = _mark_hardened(
+        _event_term_matches, original=original_event_term_matches
+    )
+    service.AlertStateStore._load_unlocked = _mark_hardened(
+        _load_unlocked, original=original_load_unlocked
+    )
+    service._PHASE10_HARDENING_INSTALLED = _HARDENING_VERSION
