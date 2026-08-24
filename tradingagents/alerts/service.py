@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import unicodedata
 from collections.abc import Iterable, Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -37,9 +38,19 @@ _EVENT_RULES: tuple[tuple[AlertCategory, int, tuple[str, ...]], ...] = (
 _SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 
 
+def _normalize_event_text(value: str) -> str:
+    """Normalize Turkish casing/diacritics for deterministic keyword matching."""
+    folded = value.casefold().replace("ı", "i")
+    return "".join(
+        char
+        for char in unicodedata.normalize("NFKD", folded)
+        if not unicodedata.combining(char)
+    )
+
+
 def classify_kap_disclosure(disclosure: KapDisclosure) -> tuple[AlertCategory, int, AlertSeverity]:
     """Classify one KAP disclosure into a deterministic alert category/severity."""
-    text = f"{disclosure.subject} {disclosure.summary}".casefold()
+    text = _normalize_event_text(f"{disclosure.subject} {disclosure.summary}")
     category: AlertCategory = "other"
     score = 0
 
@@ -49,7 +60,7 @@ def classify_kap_disclosure(disclosure: KapDisclosure) -> tuple[AlertCategory, i
     for candidate, weight, terms in _EVENT_RULES:
         if weight <= score:
             continue
-        if any(term in text for term in terms):
+        if any(_normalize_event_text(term) in text for term in terms):
             category, score = candidate, weight
 
     if disclosure.is_corrective and score:
