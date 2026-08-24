@@ -51,6 +51,7 @@ _SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 _ISTANBUL_TZ = pytz.timezone("Europe/Istanbul")
 _STATE_VERSION = 2
 _ALERT_SUMMARY_LIMIT = 600
+_TRANSFER_CONTEXT_STEMS = ("pay", "hisse", "varlik", "isletme", "sirket", "istirak", "tesis")
 
 
 def _normalize_event_text(value: str) -> str:
@@ -61,6 +62,27 @@ def _normalize_event_text(value: str) -> str:
         for char in unicodedata.normalize("NFKD", folded)
         if not unicodedata.combining(char)
     )
+
+
+def _token_has_stem(token: str, stems: tuple[str, ...]) -> bool:
+    return any(token.startswith(stem) for stem in stems)
+
+
+def _devir_has_acquisition_context(text: str) -> bool:
+    """Treat devir as M&A only near share/asset/business/company context."""
+    tokens = re.findall(r"\w+", text)
+    for index, token in enumerate(tokens):
+        if not token.startswith("devir"):
+            continue
+        nearby = tokens[max(0, index - 3) : index] + tokens[index + 1 : index + 4]
+        if any(_token_has_stem(item, _TRANSFER_CONTEXT_STEMS) for item in nearby):
+            return True
+    return False
+
+
+def _is_articles_of_association_context(text: str) -> bool:
+    """Identify Ana/Esas Sözleşme disclosures so later shorthand stays excluded."""
+    return re.search(r"(?<!\w)(?:esas|ana)\s+sozlesme\w*", text) is not None
 
 
 def _event_term_matches(text: str, term: str) -> bool:
@@ -100,18 +122,18 @@ def _event_term_matches(text: str, term: str) -> bool:
             for token in re.findall(r"\w+", text)
         )
     if normalized == "satin alma":
-        # Cover common KAP acquisition inflections: "satın alma", "satın alımı",
-        # "satın alınması" and their suffixed variants.
-        return re.search(r"(?<!\w)satin\s+al(?:ma|im|in)\w*", text) is not None
+        # "satın" already supplies strong acquisition context, so accept noun,
+        # passive and active verb inflections: alma/alımı/alınması/aldı/alacak/alıyor/etc.
+        return re.search(r"(?<!\w)satin\s+al\w*", text) is not None
+    if normalized == "devir":
+        return _devir_has_acquisition_context(text)
     if normalized == "sozlesme":
-        # Commercial contracts should not be confused with articles of association,
-        # commonly written as either "Esas Sözleşme" or "Ana Sözleşme" on KAP.
-        tokens = re.findall(r"\w+", text)
-        return any(
-            token.startswith("sozlesme")
-            and (index == 0 or tokens[index - 1] not in {"esas", "ana"})
-            for index, token in enumerate(tokens)
-        )
+        # Once the disclosure identifies Ana/Esas Sözleşme (articles of association),
+        # later shorthand such as "Sözleşmenin 6. maddesi" must not reactivate a
+        # commercial-contract alert.
+        if _is_articles_of_association_context(text):
+            return False
+        return re.search(r"(?<!\w)sozlesme\w*", text) is not None
     if normalized == "pay alim satim":
         # KAP commonly uses both spaced and hyphenated forms.
         return re.search(r"(?<!\w)pay\s+alim(?:\s*-\s*|\s+)satim(?!\w)", text) is not None
