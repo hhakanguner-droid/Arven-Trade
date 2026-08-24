@@ -50,6 +50,7 @@ _EVENT_RULES: tuple[tuple[AlertCategory, int, tuple[str, ...]], ...] = (
 _SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 _ISTANBUL_TZ = pytz.timezone("Europe/Istanbul")
 _STATE_VERSION = 2
+_ALERT_SUMMARY_LIMIT = 600
 
 
 def _normalize_event_text(value: str) -> str:
@@ -98,12 +99,17 @@ def _event_term_matches(text: str, term: str) -> bool:
             token in accepted_tokens or token.startswith("cezalandir")
             for token in re.findall(r"\w+", text)
         )
+    if normalized == "satin alma":
+        # Cover common KAP acquisition inflections: "satın alma", "satın alımı",
+        # "satın alınması" and their suffixed variants.
+        return re.search(r"(?<!\w)satin\s+al(?:ma|im|in)\w*", text) is not None
     if normalized == "sozlesme":
-        # Commercial contracts should not be confused with the corporate
-        # "Esas Sözleşme" (articles of association) and its inflections.
+        # Commercial contracts should not be confused with articles of association,
+        # commonly written as either "Esas Sözleşme" or "Ana Sözleşme" on KAP.
         tokens = re.findall(r"\w+", text)
         return any(
-            token.startswith("sozlesme") and (index == 0 or tokens[index - 1] != "esas")
+            token.startswith("sozlesme")
+            and (index == 0 or tokens[index - 1] not in {"esas", "ana"})
             for index, token in enumerate(tokens)
         )
     if normalized == "pay alim satim":
@@ -167,6 +173,15 @@ def _alert_significance_key(disclosure: object) -> tuple[int, datetime]:
     if not isinstance(published_at, datetime):
         published_at = datetime.min
     return score, published_at
+
+
+def _bounded_alert_summary(value: str, limit: int = _ALERT_SUMMARY_LIMIT) -> str:
+    """Bound persisted/delivered alert summaries while classification keeps full text."""
+    if len(value) <= limit:
+        return value
+    if limit <= 3:
+        return value[:limit]
+    return f"{value[: limit - 3].rstrip()}..."
 
 
 def _alert_dict_priority(item: Mapping[str, Any]) -> tuple[int, int, str]:
@@ -676,7 +691,7 @@ class KapWatchlistAlertService:
                         ticker=ticker,
                         published_at=disclosure.published_at,
                         title=disclosure.subject,
-                        summary=disclosure.summary,
+                        summary=_bounded_alert_summary(disclosure.summary),
                         url=disclosure.url,
                         category=category,
                         severity=severity,
