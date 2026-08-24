@@ -24,6 +24,7 @@ from tradingagents.agents.utils.news_data_tools import (
 )
 from tradingagents.agents.utils.prediction_markets_tools import get_prediction_markets
 from tradingagents.agents.utils.technical_indicators_tools import get_indicators
+from tradingagents.dataflows.bist import build_bist_market_context, is_bist_yahoo_symbol
 
 # Public surface: the data tools are imported here so agents and the graph
 # import them from one place, plus the instrument/language helpers defined below.
@@ -61,6 +62,7 @@ def get_language_instruction() -> str:
     report rather than a mix of languages.
     """
     from tradingagents.dataflows.config import get_config
+
     lang = get_config().get("output_language", "English")
     if lang.strip().lower() == "english":
         return ""
@@ -114,6 +116,9 @@ def resolve_instrument_identity(ticker: str) -> dict:
         ("industry", "industry"),
         ("exchange", "exchange"),
         ("quoteType", "quote_type"),
+        ("currency", "currency"),
+        ("financialCurrency", "financial_currency"),
+        ("country", "country"),
     ):
         value = _clean_identity_value(info.get(source_key))
         if value:
@@ -138,7 +143,7 @@ def build_instrument_context(
     context = (
         f"The {instrument_label} to analyze is `{ticker}`. "
         "Use this exact ticker in every tool call, report, and recommendation, "
-        "preserving any exchange suffix (e.g. `.TO`, `.L`, `.HK`, `.T`, `-USD`)."
+        "preserving any exchange suffix (e.g. `.IS`, `.TO`, `.L`, `.HK`, `.T`, `-USD`)."
     )
 
     details = []
@@ -155,6 +160,12 @@ def build_instrument_context(
             details.append(f"Industry: {industry}")
         if identity.get("exchange"):
             details.append(f"Exchange: {identity['exchange']}")
+        if identity.get("currency"):
+            details.append(f"Trading currency: {identity['currency']}")
+        if identity.get("financial_currency"):
+            details.append(f"Financial reporting currency: {identity['financial_currency']}")
+        if identity.get("country"):
+            details.append(f"Country: {identity['country']}")
 
     if details:
         context += (
@@ -162,6 +173,9 @@ def build_instrument_context(
             "Do not substitute a different company or ticker unless a tool "
             "result explicitly disproves this resolved identity."
         )
+
+    if not is_crypto and is_bist_yahoo_symbol(ticker):
+        context += f" {build_bist_market_context(ticker)}"
 
     if is_crypto:
         context += (
@@ -214,6 +228,3 @@ def create_msg_delete():
         return {"messages": removal_operations + [placeholder]}
 
     return delete_messages
-
-
-
