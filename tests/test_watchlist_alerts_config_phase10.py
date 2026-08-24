@@ -1,8 +1,8 @@
 """Configuration edge cases for Phase 10 watchlist alerts."""
 
-from datetime import datetime
 import importlib
 import os
+from datetime import datetime
 
 import pytest
 
