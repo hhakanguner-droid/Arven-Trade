@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime
-from typing import Mapping, Any
+from typing import Any, Mapping
 
 BIST_YAHOO_SUFFIX = ".IS"
 BIST_BENCHMARK = "^XU100"
