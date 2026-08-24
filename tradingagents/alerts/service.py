@@ -53,6 +53,7 @@ _STATE_VERSION = 2
 _ALERT_SUMMARY_LIMIT = 600
 _STRONG_TRANSFER_CONTEXT_STEMS = ("pay", "hisse", "varlik", "isletme", "istirak", "tesis")
 _GOVERNANCE_TRANSFER_STEMS = ("yonetim", "yetki", "gorev", "sorumluluk", "imza")
+_LEGAL_TESIS_CONTEXT_STEMS = ("rehin", "ipotek", "teminat", "intifa", "irtifak", "haciz")
 
 
 def _normalize_event_text(value: str) -> str:
@@ -70,7 +71,9 @@ def _token_has_stem(token: str, stems: tuple[str, ...]) -> bool:
 
 
 def _is_devir_token(token: str) -> bool:
-    """Match transfer noun/verb inflections without matching operational 'devreye'."""
+    """Match transfer inflections without accepting devrim/devriye or devreye."""
+    if token.startswith(("devrim", "devriye", "devreye")):
+        return False
     return token.startswith(("devir", "devri", "devred", "devret"))
 
 
@@ -87,6 +90,24 @@ def _devir_has_acquisition_context(text: str) -> bool:
             continue
         if any(item.startswith("sirket") for item in nearby):
             return True
+    return False
+
+
+def _tesis_is_operational(text: str) -> bool:
+    """Match physical facilities while excluding legal 'security interest creation' usage."""
+    tokens = re.findall(r"\w+", text)
+    for index, token in enumerate(tokens):
+        if not token.startswith("tesis"):
+            continue
+        previous = tokens[max(0, index - 4) : index]
+        following = tokens[index + 1 : index + 3]
+        has_legal_context = any(
+            _token_has_stem(item, _LEGAL_TESIS_CONTEXT_STEMS) for item in previous
+        )
+        is_creation_verb = any(item.startswith(("edil", "et")) for item in following)
+        if has_legal_context and is_creation_verb:
+            continue
+        return True
     return False
 
 
@@ -135,7 +156,12 @@ def _event_term_matches(text: str, term: str) -> bool:
         # Cover birleşme/birleşti/birleşiyor/etc., but not "Birleşik" place names.
         return re.search(r"(?<!\w)birles(?!ik)\w*", text) is not None
     if normalized == "bolunme":
-        return re.search(r"(?<!\w)bolun\w*", text) is not None
+        # Match corporate split noun/verb inflections without accepting the
+        # adjectival infrastructure phrase "bölünmüş yol".
+        return (
+            re.search(r"(?<!\w)bolun(?:me\w*|du\w*|uyor\w*|ecek\w*|erek\w*)", text)
+            is not None
+        )
     if normalized == "satin alma":
         # "satın" already supplies strong acquisition context, so accept noun,
         # passive and active verb inflections: alma/alımı/alınması/aldı/alacak/alıyor/etc.
@@ -151,6 +177,8 @@ def _event_term_matches(text: str, term: str) -> bool:
         if _is_articles_of_association_context(text):
             return False
         return re.search(r"(?<!\w)sozlesme\w*", text) is not None
+    if normalized == "tesis":
+        return _tesis_is_operational(text)
     if normalized == "pay alim satim":
         # KAP commonly uses both spaced and hyphenated forms.
         return re.search(r"(?<!\w)pay\s+alim(?:\s*-\s*|\s+)satim(?!\w)", text) is not None
