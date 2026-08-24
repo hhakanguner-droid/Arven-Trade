@@ -133,13 +133,13 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # Phase 10 watchlist / KAP event notifications. Paths are local application
     # state; a future PWA/API layer can use the service without changing its
     # de-duplication and importance rules.
-    "watchlist_path": os.getenv(
-        "TRADINGAGENTS_WATCHLIST_PATH",
-        os.path.join(_TRADINGAGENTS_HOME, "watchlist.json"),
+    "watchlist_path": (
+        os.getenv("TRADINGAGENTS_WATCHLIST_PATH")
+        or os.path.join(_TRADINGAGENTS_HOME, "watchlist.json")
     ),
-    "alert_state_path": os.getenv(
-        "TRADINGAGENTS_ALERT_STATE_PATH",
-        os.path.join(_TRADINGAGENTS_HOME, "alerts", "kap_alerts.json"),
+    "alert_state_path": (
+        os.getenv("TRADINGAGENTS_ALERT_STATE_PATH")
+        or os.path.join(_TRADINGAGENTS_HOME, "alerts", "kap_alerts.json")
     ),
     "kap_alerts_enabled": True,
     "kap_alert_lookback_days": 7,
