@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import pytest
 
+from tradingagents.alerts.models import WatchlistAlert
 from tradingagents.alerts.service import (
     AlertStateStore,
     KapWatchlistAlertService,
@@ -36,6 +38,22 @@ def _disclosure(
         is_corrective=corrective,
         disclosure_id=disclosure_id,
         summary=summary,
+    )
+
+
+def _alert(disclosure_id: int, title: str, severity: str, score: int) -> WatchlistAlert:
+    return WatchlistAlert(
+        alert_id=f"KAP:THYAO.IS:{disclosure_id}",
+        source="KAP",
+        ticker="THYAO.IS",
+        published_at=datetime(2026, 8, 24, 9, disclosure_id % 60),
+        title=title,
+        summary="",
+        url=f"https://www.kap.org.tr/tr/Bildirim/{disclosure_id}",
+        category="financials" if severity == "critical" else "operations",
+        severity=severity,
+        score=score,
+        disclosure_id=disclosure_id,
     )
 
 
@@ -88,6 +106,16 @@ def test_watchlist_add_remove_and_rejects_non_bist_symbols(tmp_path):
 
 
 @pytest.mark.unit
+def test_watchlist_concurrent_adds_do_not_lose_updates(tmp_path):
+    store = WatchlistStore(tmp_path / "watchlist.json")
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(store.add, ["THYAO.IS", "ASELS.IS"]))
+
+    assert results == [True, True]
+    assert set(store.list()) == {"THYAO.IS", "ASELS.IS"}
+
+
+@pytest.mark.unit
 def test_watchlist_replace_fails_closed_on_invalid_member(tmp_path):
     store = WatchlistStore(tmp_path / "watchlist.json")
     with pytest.raises(ValueError, match="watchlist only accepts"):
@@ -117,7 +145,7 @@ def test_corrective_disclosure_increases_non_max_score():
 
 
 @pytest.mark.unit
-def test_alert_service_emits_only_new_important_events_and_deduplicates(tmp_path):
+def test_alert_service_emits_only_new_important_events_and_uses_retryable_outbox(tmp_path):
     important = _disclosure(101, "Kar Payı Dağıtımı")
     routine = _disclosure(102, "Genel Bilgilendirme")
     fake = FakeKapService({"THYAO.IS": _ok_result("THYAO.IS", (important, routine))})
@@ -140,10 +168,39 @@ def test_alert_service_emits_only_new_important_events_and_deduplicates(tmp_path
     assert first.alerts[0].severity == "critical"
     assert second.alerts == ()
     assert set(state.seen_ids()) == {"KAP:THYAO.IS:101", "KAP:THYAO.IS:102"}
+    assert [item["alert_id"] for item in state.pending()] == ["KAP:THYAO.IS:101"]
+    assert state.history() == ()
+    assert service.acknowledge_alerts(["KAP:THYAO.IS:101"]) == 1
+    assert state.pending() == ()
     assert len(state.history()) == 1
     assert len(fake.calls) == 2
     assert fake.calls[0]["include_attachments"] is False
     assert callable(fake.calls[0]["significance_key"])
+
+
+@pytest.mark.unit
+def test_pending_outbox_survives_restart_until_acknowledged(tmp_path):
+    disclosure = _disclosure(111, "Temettü Ödemesi")
+    result = _ok_result("THYAO.IS", (disclosure,))
+    watchlist_path = tmp_path / "watchlist.json"
+    state_path = tmp_path / "alerts.json"
+
+    first = KapWatchlistAlertService(
+        WatchlistStore(watchlist_path, ["THYAO.IS"]),
+        AlertStateStore(state_path),
+        kap_service=FakeKapService({"THYAO.IS": result}),
+    )
+    assert len(first.check_watchlist(now=datetime(2026, 8, 24, 10, 0)).alerts) == 1
+
+    restarted = KapWatchlistAlertService(
+        WatchlistStore(watchlist_path),
+        AlertStateStore(state_path),
+        kap_service=FakeKapService({"THYAO.IS": result}),
+    )
+    assert restarted.check_watchlist(now=datetime(2026, 8, 24, 10, 5)).alerts == ()
+    assert [item["alert_id"] for item in restarted.pending_alerts()] == ["KAP:THYAO.IS:111"]
+    assert restarted.acknowledge_alerts(["KAP:THYAO.IS:111"]) == 1
+    assert restarted.pending_alerts() == ()
 
 
 @pytest.mark.unit
@@ -156,9 +213,7 @@ def test_alert_service_uses_borsa_istanbul_calendar_for_aware_utc_time(tmp_path)
         kap_service=fake,
     )
 
-    batch = service.check_watchlist(
-        now=datetime(2026, 8, 23, 21, 30, tzinfo=timezone.utc)
-    )
+    batch = service.check_watchlist(now=datetime(2026, 8, 23, 21, 30, tzinfo=timezone.utc))
 
     assert batch.checked_at.date().isoformat() == "2026-08-24"
     assert str(batch.checked_at.tzinfo) == "Europe/Istanbul"
@@ -208,6 +263,27 @@ def test_seen_capacity_must_cover_one_full_poll_across_watchlist(tmp_path):
 
 
 @pytest.mark.unit
+def test_seen_capacity_tracks_tickers_across_subset_polls(tmp_path):
+    fake = FakeKapService(
+        {
+            "THYAO.IS": _ok_result("THYAO.IS", ()),
+            "ASELS.IS": _ok_result("ASELS.IS", ()),
+        }
+    )
+    service = KapWatchlistAlertService(
+        WatchlistStore(tmp_path / "watchlist.json"),
+        AlertStateStore(tmp_path / "alerts.json", seen_limit=1),
+        kap_service=fake,
+        max_disclosures_per_ticker=1,
+    )
+
+    service.check_watchlist(tickers=["THYAO.IS"], now=datetime(2026, 8, 24, 11, 0))
+    with pytest.raises(ValueError, match="alert_seen_limit"):
+        service.check_watchlist(tickers=["ASELS.IS"], now=datetime(2026, 8, 24, 11, 5))
+    assert len(fake.calls) == 1
+
+
+@pytest.mark.unit
 def test_kap_unavailable_is_status_not_fabricated_alert(tmp_path):
     unavailable = KapDisclosureResult(
         status="unavailable",
@@ -246,11 +322,35 @@ def test_alerts_are_sorted_by_severity_then_score(tmp_path):
 
 
 @pytest.mark.unit
+def test_history_limit_keeps_highest_priority_delivered_alerts(tmp_path):
+    state = AlertStateStore(tmp_path / "alerts.json", history_limit=1, seen_limit=10)
+    medium = _alert(401, "Kapasite Artışı", "medium", 80)
+    critical = _alert(402, "Finansal Sonuçlar", "critical", 100)
+
+    claimed = state.claim([medium.alert_id, critical.alert_id], [medium, critical])
+    assert {alert.alert_id for alert in claimed} == {medium.alert_id, critical.alert_id}
+    assert state.acknowledge([medium.alert_id, critical.alert_id]) == 2
+
+    history = state.history()
+    assert len(history) == 1
+    assert history[0]["alert_id"] == critical.alert_id
+
+
+@pytest.mark.unit
 def test_corrupt_alert_state_fails_closed_instead_of_realerting_everything(tmp_path):
     state_path = tmp_path / "alerts.json"
     state_path.write_text("{broken", encoding="utf-8")
     state = AlertStateStore(state_path)
     with pytest.raises(ValueError, match="invalid JSON state file"):
+        state.seen_ids()
+
+
+@pytest.mark.unit
+def test_semantically_corrupt_alert_state_missing_fields_fails_closed(tmp_path):
+    state_path = tmp_path / "alerts.json"
+    state_path.write_text('{"version": 2}', encoding="utf-8")
+    state = AlertStateStore(state_path)
+    with pytest.raises(ValueError, match="invalid alert state schema"):
         state.seen_ids()
 
 
