@@ -100,8 +100,19 @@ def _significance(disclosure) -> tuple[int, datetime]:
     return score, disclosure.publish_datetime
 
 
-def _select_significant(disclosures: Iterable, limit: int) -> list:
-    ranked = sorted(disclosures, key=_significance, reverse=True)[:limit]
+def _select_significant(
+    disclosures: Iterable,
+    limit: int,
+    significance_key: Callable[[object], tuple[int, datetime]] | None = None,
+) -> list:
+    """Select disclosures with an optional caller-specific importance ranking.
+
+    The default keeps the KAP analyst's historic ranking. Alert consumers can
+    provide their own deterministic ranking so critical events are not removed
+    by an unrelated pre-selection rule before alert classification runs.
+    """
+    key = significance_key or _significance
+    ranked = sorted(disclosures, key=key, reverse=True)[:limit]
     return sorted(ranked, key=lambda item: item.publish_datetime, reverse=True)
 
 
@@ -127,6 +138,7 @@ class KapService:
         *,
         lookback_days: int = 30,
         include_attachments: bool = True,
+        significance_key: Callable[[object], tuple[int, datetime]] | None = None,
     ) -> KapDisclosureResult:
         today = date.today()
         end = _date_string(end_date, today)
@@ -165,7 +177,7 @@ class KapService:
                     if company_oid is None:
                         raise
                 raw = client.fetch_disclosures(company_oid, start, end)
-                selected = _select_significant(raw, limit)
+                selected = _select_significant(raw, limit, significance_key)
                 mapped = tuple(
                     self._map_disclosure(client, item, kap_ticker, include_attachments)
                     for item in selected
