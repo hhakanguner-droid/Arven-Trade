@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Iterable, Mapping
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -211,6 +211,7 @@ class KapWatchlistAlertService:
         state: AlertStateStore,
         *,
         kap_service: KapService | None = None,
+        enabled: bool = True,
         lookback_days: int = 7,
         min_score: int = 80,
         max_disclosures_per_ticker: int = 100,
@@ -224,6 +225,7 @@ class KapWatchlistAlertService:
         self.watchlist = watchlist
         self.state = state
         self.kap_service = kap_service or KapService()
+        self.enabled = bool(enabled)
         self.lookback_days = int(lookback_days)
         self.min_score = int(min_score)
         self.max_disclosures_per_ticker = int(max_disclosures_per_ticker)
@@ -235,6 +237,19 @@ class KapWatchlistAlertService:
         now: datetime | None = None,
     ) -> WatchlistAlertBatch:
         checked_at = now or datetime.now()
+        if not self.enabled:
+            return WatchlistAlertBatch(
+                checked_at=checked_at,
+                source_statuses=(
+                    AlertSourceStatus(
+                        ticker="*",
+                        source="KAP",
+                        status="disabled",
+                        message="KAP watchlist alerts are disabled by configuration.",
+                    ),
+                ),
+            )
+
         end = checked_at.date()
         start = end - timedelta(days=self.lookback_days)
         requested = self.watchlist.list() if tickers is None else tuple(tickers)
@@ -324,6 +339,7 @@ def create_watchlist_alert_service(config: Mapping[str, Any] | None = None) -> K
         watchlist,
         state,
         kap_service=KapService(timeout=float(config.get("kap_timeout_seconds", 15.0))),
+        enabled=bool(config.get("kap_alerts_enabled", True)),
         lookback_days=int(config.get("kap_alert_lookback_days", 7)),
         min_score=int(config.get("kap_alert_min_score", 80)),
         max_disclosures_per_ticker=int(config.get("kap_alert_max_disclosures", 100)),
