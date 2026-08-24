@@ -175,6 +175,7 @@ def test_alert_service_emits_only_new_important_events_and_uses_retryable_outbox
     assert len(state.history()) == 1
     assert len(fake.calls) == 2
     assert fake.calls[0]["include_attachments"] is False
+    assert fake.calls[0]["summary_limit"] is None
     assert callable(fake.calls[0]["significance_key"])
 
 
@@ -259,7 +260,7 @@ def test_seen_capacity_must_cover_one_full_poll_across_watchlist(tmp_path):
 
     with pytest.raises(ValueError, match="alert_seen_limit"):
         service.check_watchlist(now=datetime(2026, 8, 24, 11, 0))
-    assert fake.calls == []
+    assert len(fake.calls) == 2
 
 
 @pytest.mark.unit
@@ -280,7 +281,7 @@ def test_seen_capacity_tracks_tickers_across_subset_polls(tmp_path):
     service.check_watchlist(tickers=["THYAO.IS"], now=datetime(2026, 8, 24, 11, 0))
     with pytest.raises(ValueError, match="alert_seen_limit"):
         service.check_watchlist(tickers=["ASELS.IS"], now=datetime(2026, 8, 24, 11, 5))
-    assert len(fake.calls) == 1
+    assert len(fake.calls) == 2
 
 
 @pytest.mark.unit
