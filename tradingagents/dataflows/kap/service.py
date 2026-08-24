@@ -139,6 +139,7 @@ class KapService:
         lookback_days: int = 30,
         include_attachments: bool = True,
         significance_key: Callable[[object], tuple[int, datetime]] | None = None,
+        summary_limit: int | None = 600,
     ) -> KapDisclosureResult:
         today = date.today()
         end = _date_string(end_date, today)
@@ -152,6 +153,10 @@ class KapService:
             raise ValueError("start_date must not be after end_date")
         if isinstance(max_disclosures, bool) or not 1 <= int(max_disclosures) <= 100:
             raise ValueError("max_disclosures must be between 1 and 100")
+        if summary_limit is not None:
+            if isinstance(summary_limit, bool) or int(summary_limit) < 1:
+                raise ValueError("summary_limit must be a positive integer or None")
+            summary_limit = int(summary_limit)
         limit = int(max_disclosures)
 
         try:
@@ -179,7 +184,13 @@ class KapService:
                 raw = client.fetch_disclosures(company_oid, start, end)
                 selected = _select_significant(raw, limit, significance_key)
                 mapped = tuple(
-                    self._map_disclosure(client, item, kap_ticker, include_attachments)
+                    self._map_disclosure(
+                        client,
+                        item,
+                        kap_ticker,
+                        include_attachments,
+                        summary_limit,
+                    )
                     for item in selected
                 )
             return KapDisclosureResult(
@@ -225,7 +236,13 @@ class KapService:
             )
 
     @staticmethod
-    def _map_disclosure(client, item, ticker: str, include_attachments: bool) -> KapDisclosure:
+    def _map_disclosure(
+        client,
+        item,
+        ticker: str,
+        include_attachments: bool,
+        summary_limit: int | None = 600,
+    ) -> KapDisclosure:
         attachments: tuple[KapAttachment, ...] = ()
         if include_attachments and item.has_attachment:
             try:
@@ -235,6 +252,7 @@ class KapService:
                 )
             except Exception as exc:  # noqa: BLE001 - metadata enrichment is optional
                 logger.info("KAP attachment metadata unavailable for %s: %s", item.index, exc)
+        summary = item.summary if summary_limit is None else item.summary[:summary_limit]
         return KapDisclosure(
             published_at=item.publish_datetime,
             company=item.company_name,
@@ -245,7 +263,7 @@ class KapService:
             has_attachment=item.has_attachment,
             is_corrective=item.is_corrective,
             disclosure_id=item.index,
-            summary=item.summary[:600],
+            summary=summary,
             attachments=attachments,
         )
 
