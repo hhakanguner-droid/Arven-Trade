@@ -68,6 +68,10 @@ def test_security_interest_tesis_wording_is_not_a_facility_alert(subject):
             ("commercial", 85, "high"),
         ),
         ("Şirket yeni makine satın aldı", ("other", 0, "low")),
+        ("Şirket satın aldı", ("other", 0, "low")),
+        ("Şirket Satın Alımı", ("mna", 90, "high")),
+        ("Şirket Satın Alma İşlemi", ("mna", 90, "high")),
+        ("Şirket satın alındı", ("mna", 90, "high")),
         ("Payların Satın Alınması", ("mna", 90, "high")),
         ("Elektrik Dağıtım Şirketinin Satın Alınması", ("mna", 90, "high")),
         ("Şirket ABC'yi satın aldı", ("mna", 90, "high")),
@@ -84,12 +88,16 @@ def test_purchase_wording_requires_an_acquisition_target(subject, expected):
     ("subject", "expected"),
     [
         ("Yönetim Görevini Devraldı", ("governance", 65, "low")),
+        ("Şirket devraldı", ("other", 0, "low")),
+        ("Şirket devralındı", ("mna", 90, "high")),
+        ("Şirket X'i Devraldı", ("mna", 90, "high")),
         ("İştirak Paylarının Devralınması", ("mna", 90, "high")),
         ("Tesis Motor Devir Hızı Hakkında", ("operations", 80, "medium")),
         ("Pay Devri Hakkında", ("mna", 90, "high")),
         ("Pay Geri Alındı", ("ownership", 90, "high")),
         ("Geri Alım Programı", ("ownership", 90, "high")),
         ("Ürün Geri Alındı", ("other", 0, "low")),
+        ("Ürün Geri Alım Programı", ("other", 0, "low")),
     ],
 )
 def test_transfer_and_repurchase_semantics_avoid_neighboring_false_positives(subject, expected):
