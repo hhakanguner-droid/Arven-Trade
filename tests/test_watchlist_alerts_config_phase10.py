@@ -6,6 +6,8 @@ from datetime import datetime
 
 import pytest
 
+import tradingagents.alerts.__main__ as alert_cli
+from tradingagents.alerts.models import AlertSourceStatus, WatchlistAlertBatch
 from tradingagents.alerts.service import AlertStateStore, KapWatchlistAlertService, WatchlistStore
 
 
@@ -61,3 +63,49 @@ def test_empty_phase10_path_env_vars_fall_back_to_defaults(monkeypatch):
     assert reloaded.DEFAULT_CONFIG["alert_state_path"] == os.path.join(
         home, "alerts", "kap_alerts.json"
     )
+
+
+@pytest.mark.unit
+def test_cli_check_returns_failure_when_every_kap_source_fails(monkeypatch, capsys):
+    batch = WatchlistAlertBatch(
+        checked_at=datetime(2026, 8, 24, 11, 0),
+        source_statuses=(
+            AlertSourceStatus(
+                ticker="THYAO.IS",
+                source="KAP",
+                status="unavailable",
+                message="KAP geçici olarak kullanılamıyor.",
+            ),
+        ),
+    )
+
+    class FakeService:
+        def check_watchlist(self):
+            return batch
+
+    monkeypatch.setattr(alert_cli, "create_watchlist_alert_service", lambda: FakeService())
+
+    assert alert_cli.main(["check", "--json"]) == 1
+    assert '"status": "unavailable"' in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_cli_disabled_check_is_not_reported_as_failure(monkeypatch):
+    batch = WatchlistAlertBatch(
+        checked_at=datetime(2026, 8, 24, 11, 0),
+        source_statuses=(
+            AlertSourceStatus(
+                ticker="*",
+                source="KAP",
+                status="disabled",
+                message="disabled",
+            ),
+        ),
+    )
+
+    class FakeService:
+        def check_watchlist(self):
+            return batch
+
+    monkeypatch.setattr(alert_cli, "create_watchlist_alert_service", lambda: FakeService())
+    assert alert_cli.main(["check", "--json"]) == 0
