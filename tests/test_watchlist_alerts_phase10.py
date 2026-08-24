@@ -43,7 +43,7 @@ def _disclosure(
 
 def _alert(disclosure_id: int, title: str, severity: str, score: int) -> WatchlistAlert:
     return WatchlistAlert(
-        alert_id=f"KAP:THYAO.IS:{disclosure_id}",
+        alert_id=f"KAP:{disclosure_id}",
         source="KAP",
         ticker="THYAO.IS",
         published_at=datetime(2026, 8, 24, 9, disclosure_id % 60),
@@ -167,10 +167,10 @@ def test_alert_service_emits_only_new_important_events_and_uses_retryable_outbox
     assert first.alerts[0].source == "KAP"
     assert first.alerts[0].severity == "critical"
     assert second.alerts == ()
-    assert set(state.seen_ids()) == {"KAP:THYAO.IS:101", "KAP:THYAO.IS:102"}
-    assert [item["alert_id"] for item in state.pending()] == ["KAP:THYAO.IS:101"]
+    assert set(state.seen_ids()) == {"KAP:101", "KAP:102"}
+    assert [item["alert_id"] for item in state.pending()] == ["KAP:101"]
     assert state.history() == ()
-    assert service.acknowledge_alerts(["KAP:THYAO.IS:101"]) == 1
+    assert service.acknowledge_alerts(["KAP:101"]) == 1
     assert state.pending() == ()
     assert len(state.history()) == 1
     assert len(fake.calls) == 2
@@ -199,8 +199,8 @@ def test_pending_outbox_survives_restart_until_acknowledged(tmp_path):
         kap_service=FakeKapService({"THYAO.IS": result}),
     )
     assert restarted.check_watchlist(now=datetime(2026, 8, 24, 10, 5)).alerts == ()
-    assert [item["alert_id"] for item in restarted.pending_alerts()] == ["KAP:THYAO.IS:111"]
-    assert restarted.acknowledge_alerts(["KAP:THYAO.IS:111"]) == 1
+    assert [item["alert_id"] for item in restarted.pending_alerts()] == ["KAP:111"]
+    assert restarted.acknowledge_alerts(["KAP:111"]) == 1
     assert restarted.pending_alerts() == ()
 
 
