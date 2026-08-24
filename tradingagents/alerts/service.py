@@ -54,6 +54,7 @@ _STATE_VERSION = 2
 _ALERT_SUMMARY_LIMIT = 600
 _STRONG_TRANSFER_CONTEXT_STEMS = ("pay", "hisse", "varlik", "isletme", "istirak", "tesis")
 _GOVERNANCE_TRANSFER_STEMS = ("yonetim", "yetki", "gorev", "sorumluluk", "imza", "makam")
+_NON_TRANSFER_OPERATION_STEMS = ("hiz", "motor", "pompa", "rpm", "dakika", "donus")
 _LEGAL_TESIS_CONTEXT_STEMS = (
     "rehin",
     "ipotek",
@@ -149,6 +150,26 @@ def _nearby_tokens(tokens: list[str], index: int, radius: int = 4) -> list[str]:
     return tokens[max(0, index - radius) : index] + tokens[index + 1 : index + radius + 1]
 
 
+def _is_acquisition_target_token(token: str) -> bool:
+    """Recognize explicit acquisition targets without treating bare 'şirket' as its actor."""
+    if token == "sirket":
+        return False
+    return _token_has_stem(token, _ACQUISITION_TARGET_STEMS)
+
+
+def _looks_like_named_company_target(before: list[str]) -> bool:
+    """Recognize Turkish case-marked company names before 'satın al...' wording."""
+    if not before or before[-1] not in _NAME_CASE_SUFFIX_TOKENS:
+        return False
+    if "sirket" in before[:-1]:
+        return True
+    if len(before) >= 2 and before[-2] in {"as", "ltd"}:
+        return True
+    if len(before) >= 3 and before[-3:-1] == ["a", "s"]:
+        return True
+    return any(item.startswith(("anonim", "limited")) for item in before[-4:-1])
+
+
 def _is_devir_token(token: str) -> bool:
     """Match transfer inflections without accepting unrelated devir-prefixed words."""
     if token.startswith(("devrim", "devriye", "devreye", "devirdaim")):
@@ -163,6 +184,8 @@ def _devir_has_acquisition_context(text: str) -> bool:
         if not _is_devir_token(token):
             continue
         nearby = _nearby_tokens(tokens, index, radius=3)
+        if any(_token_has_stem(item, _NON_TRANSFER_OPERATION_STEMS) for item in nearby):
+            continue
         if any(_token_has_stem(item, _STRONG_TRANSFER_CONTEXT_STEMS) for item in nearby):
             return True
         if any(_token_has_stem(item, _GOVERNANCE_TRANSFER_STEMS) for item in nearby):
@@ -179,10 +202,10 @@ def _devralma_has_acquisition_context(text: str) -> bool:
         if not token.startswith("devral"):
             continue
         nearby = _nearby_tokens(tokens, index, radius=4)
+        if any(_is_acquisition_target_token(item) for item in nearby):
+            return True
         if any(_token_has_stem(item, _GOVERNANCE_TRANSFER_STEMS) for item in nearby):
             continue
-        if any(_token_has_stem(item, _ACQUISITION_TARGET_STEMS) for item in nearby):
-            return True
         if "devralma" in token and any(item.startswith("islem") for item in nearby):
             return True
     return False
@@ -192,22 +215,20 @@ def _birlesme_is_corporate(text: str) -> bool:
     """Match corporate mergers without promoting ordinary operational combinations."""
     tokens = re.findall(r"\w+", text)
     for index, token in enumerate(tokens):
-        if token.startswith("birlesik"):
-            continue
-        if not token.startswith("birles"):
+        if token.startswith("birlesik") or not token.startswith("birles"):
             continue
         nearby = _nearby_tokens(tokens, index, radius=4)
-        has_corporate_context = any(
-            _token_has_stem(item, _CORPORATE_EVENT_CONTEXT_STEMS) for item in nearby
-        )
         has_operational_context = any(
             _token_has_stem(item, _NON_CORPORATE_COMBINATION_STEMS) for item in nearby
+        )
+        if has_operational_context:
+            continue
+        has_corporate_context = any(
+            _token_has_stem(item, _CORPORATE_EVENT_CONTEXT_STEMS) for item in nearby
         )
         if token.startswith(("birlestir", "birlestiril")):
             if has_corporate_context:
                 return True
-            continue
-        if has_operational_context and not has_corporate_context:
             continue
         if token.startswith(
             (
@@ -231,21 +252,19 @@ def _bolunme_is_corporate(text: str) -> bool:
         if not token.startswith("bolun"):
             continue
         nearby = _nearby_tokens(tokens, index, radius=4)
+        has_operational_context = any(
+            _token_has_stem(item, _NON_CORPORATE_COMBINATION_STEMS) for item in nearby
+        )
         if token.startswith("bolunmus"):
             following = tokens[index + 1 : index + 3]
             if any(item.startswith(("yol", "karayol")) for item in following):
                 continue
+            if has_operational_context:
+                continue
             has_corporate_context = any(
                 _token_has_stem(item, _CORPORATE_EVENT_CONTEXT_STEMS) for item in nearby
             )
-            has_operational_context = any(
-                _token_has_stem(item, _NON_CORPORATE_COMBINATION_STEMS) for item in nearby
-            )
-            if token.startswith(("bolunmustur", "bolunmustu")):
-                if not has_operational_context or has_corporate_context:
-                    return True
-                continue
-            if has_corporate_context:
+            if token.startswith(("bolunmustur", "bolunmustu")) or has_corporate_context:
                 return True
             continue
         if token.startswith(
@@ -259,13 +278,7 @@ def _bolunme_is_corporate(text: str) -> bool:
                 "bolunmek",
             )
         ):
-            has_operational_context = any(
-                _token_has_stem(item, _NON_CORPORATE_COMBINATION_STEMS) for item in nearby
-            )
-            has_corporate_context = any(
-                _token_has_stem(item, _CORPORATE_EVENT_CONTEXT_STEMS) for item in nearby
-            )
-            if has_operational_context and not has_corporate_context:
+            if has_operational_context:
                 continue
             return True
     return False
@@ -279,28 +292,26 @@ def _satin_alma_is_acquisition(text: str) -> bool:
             continue
 
         before = tokens[max(0, index - 6) : index]
+        before_decision: bool | None = None
         for item in reversed(before):
             if _token_has_stem(item, _PROCUREMENT_TARGET_STEMS):
+                before_decision = False
                 break
-            if _token_has_stem(item, _ACQUISITION_TARGET_STEMS):
-                if item == "sirket":
-                    continue
-                return True
-        else:
-            pass
-
-        if (
-            "sirket" in before
-            and before
-            and before[-1] in _NAME_CASE_SUFFIX_TOKENS
-        ):
+            if _is_acquisition_target_token(item):
+                before_decision = True
+                break
+        if before_decision is True:
+            return True
+        if before_decision is False:
+            continue
+        if _looks_like_named_company_target(before):
             return True
 
         after = tokens[index + 2 : index + 7]
         for item in after:
             if _token_has_stem(item, _PROCUREMENT_TARGET_STEMS):
                 break
-            if _token_has_stem(item, _ACQUISITION_TARGET_STEMS):
+            if _is_acquisition_target_token(item) or item == "sirket":
                 return True
     return False
 
@@ -315,6 +326,20 @@ def _tesis_is_operational(text: str) -> bool:
         if any(_token_has_stem(item, _LEGAL_TESIS_CONTEXT_STEMS) for item in nearby):
             continue
         return True
+    return False
+
+
+def _share_repurchase_matches(text: str) -> bool:
+    """Match share buybacks, including inflections, without treating product recalls as ownership."""
+    tokens = re.findall(r"\w+", text)
+    for index in range(len(tokens) - 1):
+        if tokens[index] != "geri" or not tokens[index + 1].startswith("al"):
+            continue
+        nearby = _nearby_tokens(tokens, index, radius=5)
+        if any(item.startswith(("pay", "hisse")) for item in nearby):
+            return True
+        if any(item.startswith("program") for item in nearby):
+            return True
     return False
 
 
@@ -382,6 +407,8 @@ def _event_term_matches(text: str, term: str) -> bool:
         return _devralma_has_acquisition_context(text)
     if normalized == "devir":
         return _devir_has_acquisition_context(text)
+    if normalized in {"geri alim", "pay geri alim"}:
+        return _share_repurchase_matches(text)
     if normalized == "sozlesme":
         # Once the disclosure identifies Ana/Esas Sözleşme (articles of association),
         # later shorthand such as "Sözleşmenin 6. maddesi" must not reactivate a
