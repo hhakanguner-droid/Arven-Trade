@@ -51,7 +51,8 @@ _SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 _ISTANBUL_TZ = pytz.timezone("Europe/Istanbul")
 _STATE_VERSION = 2
 _ALERT_SUMMARY_LIMIT = 600
-_TRANSFER_CONTEXT_STEMS = ("pay", "hisse", "varlik", "isletme", "sirket", "istirak", "tesis")
+_STRONG_TRANSFER_CONTEXT_STEMS = ("pay", "hisse", "varlik", "isletme", "istirak", "tesis")
+_GOVERNANCE_TRANSFER_STEMS = ("yonetim", "yetki", "gorev", "sorumluluk", "imza")
 
 
 def _normalize_event_text(value: str) -> str:
@@ -68,14 +69,23 @@ def _token_has_stem(token: str, stems: tuple[str, ...]) -> bool:
     return any(token.startswith(stem) for stem in stems)
 
 
+def _is_devir_token(token: str) -> bool:
+    """Match transfer noun/verb inflections without matching operational 'devreye'."""
+    return token.startswith(("devir", "devri", "devred", "devret"))
+
+
 def _devir_has_acquisition_context(text: str) -> bool:
     """Treat devir as M&A only near share/asset/business/company context."""
     tokens = re.findall(r"\w+", text)
     for index, token in enumerate(tokens):
-        if not token.startswith("devir"):
+        if not _is_devir_token(token):
             continue
         nearby = tokens[max(0, index - 3) : index] + tokens[index + 1 : index + 4]
-        if any(_token_has_stem(item, _TRANSFER_CONTEXT_STEMS) for item in nearby):
+        if any(_token_has_stem(item, _STRONG_TRANSFER_CONTEXT_STEMS) for item in nearby):
+            return True
+        if any(_token_has_stem(item, _GOVERNANCE_TRANSFER_STEMS) for item in nearby):
+            continue
+        if any(item.startswith("sirket") for item in nearby):
             return True
     return False
 
@@ -121,10 +131,17 @@ def _event_term_matches(text: str, term: str) -> bool:
             token in accepted_tokens or token.startswith("cezalandir")
             for token in re.findall(r"\w+", text)
         )
+    if normalized == "birlesme":
+        # Cover birleşme/birleşti/birleşiyor/etc., but not "Birleşik" place names.
+        return re.search(r"(?<!\w)birles(?!ik)\w*", text) is not None
+    if normalized == "bolunme":
+        return re.search(r"(?<!\w)bolun\w*", text) is not None
     if normalized == "satin alma":
         # "satın" already supplies strong acquisition context, so accept noun,
         # passive and active verb inflections: alma/alımı/alınması/aldı/alacak/alıyor/etc.
         return re.search(r"(?<!\w)satin\s+al\w*", text) is not None
+    if normalized == "devralma":
+        return re.search(r"(?<!\w)devral\w*", text) is not None
     if normalized == "devir":
         return _devir_has_acquisition_context(text)
     if normalized == "sozlesme":
