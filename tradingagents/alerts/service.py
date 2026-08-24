@@ -316,7 +316,7 @@ class AlertStateStore:
             return tuple(dict(item) for item in payload["history"])
 
     def ensure_capacity(self, tickers: Iterable[str], per_ticker_cap: int) -> None:
-        """Register every ticker sharing this state and validate safe dedup capacity."""
+        """Register successful tickers sharing this state and validate dedup capacity."""
         canonical = WatchlistStore._validated_unique(tickers, strict=True)
         if per_ticker_cap < 1:
             raise ValueError("per_ticker_cap must be positive")
@@ -347,7 +347,7 @@ class AlertStateStore:
         with self.locked():
             payload = self._load_unlocked()
             seen = list(payload["seen_ids"])
-            seen_set = set(seen)
+            previously_seen = set(seen)
             pending = list(payload["pending"])
             pending_ids = {
                 str(item["alert_id"])
@@ -357,16 +357,16 @@ class AlertStateStore:
 
             claimed: list[WatchlistAlert] = []
             for alert in candidates:
-                if alert.alert_id in seen_set or alert.alert_id in pending_ids:
+                if alert.alert_id in previously_seen or alert.alert_id in pending_ids:
                     continue
                 pending.append(alert.to_dict())
                 pending_ids.add(alert.alert_id)
                 claimed.append(alert)
 
-            for alert_id in observed:
-                if alert_id not in seen_set:
-                    seen.append(alert_id)
-                    seen_set.add(alert_id)
+            if observed:
+                observed_set = set(observed)
+                seen = [alert_id for alert_id in seen if alert_id not in observed_set]
+                seen.extend(observed)
 
             if len(seen) > self.seen_limit:
                 seen = seen[-self.seen_limit :]
@@ -551,15 +551,11 @@ class KapWatchlistAlertService:
         persisted_watchlist = self.watchlist.list()
         requested = persisted_watchlist if tickers is None else tuple(tickers)
         canonical_tickers = WatchlistStore._validated_unique(requested, strict=True)
-        capacity_tickers = WatchlistStore._validated_unique(
-            (*persisted_watchlist, *canonical_tickers),
-            strict=True,
-        )
-        self.state.ensure_capacity(capacity_tickers, self.max_disclosures_per_ticker)
 
         candidate_alerts: list[WatchlistAlert] = []
         observed_ids: list[str] = []
         statuses: list[AlertSourceStatus] = []
+        successful_tickers: list[str] = []
 
         for ticker in canonical_tickers:
             result = self.kap_service.get_disclosures(
@@ -569,6 +565,7 @@ class KapWatchlistAlertService:
                 max_disclosures=self.max_disclosures_per_ticker,
                 include_attachments=False,
                 significance_key=_alert_significance_key,
+                summary_limit=None,
             )
             statuses.append(
                 AlertSourceStatus(
@@ -581,6 +578,7 @@ class KapWatchlistAlertService:
             if not result.available:
                 continue
 
+            successful_tickers.append(ticker)
             for disclosure in result.disclosures:
                 alert_id = f"KAP:{ticker}:{disclosure.disclosure_id}"
                 observed_ids.append(alert_id)
@@ -605,6 +603,7 @@ class KapWatchlistAlertService:
                     )
                 )
 
+        self.state.ensure_capacity(successful_tickers, self.max_disclosures_per_ticker)
         candidate_alerts.sort(
             key=lambda item: (
                 _SEVERITY_RANK[item.severity],
