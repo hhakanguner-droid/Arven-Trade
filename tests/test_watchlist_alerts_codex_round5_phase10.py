@@ -65,6 +65,44 @@ def test_investment_inflections_still_match_operations_event():
 
 
 @pytest.mark.unit
+def test_algeria_text_is_not_misclassified_as_penalty_event():
+    assert classify_kap_disclosure(_disclosure("Cezayir'de Yeni Proje")) == ("other", 0, "low")
+    assert classify_kap_disclosure(_disclosure("Cezayir Pazarına İlişkin Açıklama")) == (
+        "other",
+        0,
+        "low",
+    )
+
+
+@pytest.mark.unit
+def test_penalty_inflections_still_match_legal_event():
+    assert classify_kap_disclosure(_disclosure("İdari Para Cezası Hakkında")) == (
+        "legal",
+        85,
+        "high",
+    )
+    assert classify_kap_disclosure(_disclosure("Cezalandırma Kararı Hakkında")) == (
+        "legal",
+        85,
+        "high",
+    )
+
+
+@pytest.mark.unit
+def test_pay_alim_satım_disclosures_match_ownership_event():
+    assert classify_kap_disclosure(_disclosure("Pay Alım Satım Bildirimi")) == (
+        "ownership",
+        80,
+        "medium",
+    )
+    assert classify_kap_disclosure(_disclosure("Pay Alım-Satım Bildirimi")) == (
+        "ownership",
+        80,
+        "medium",
+    )
+
+
+@pytest.mark.unit
 def test_delivered_history_prevents_reclaim_after_seen_id_eviction(tmp_path):
     state = AlertStateStore(tmp_path / "alerts.json", history_limit=10, seen_limit=1)
     first = _alert("THYAO.IS", 1)
