@@ -19,7 +19,8 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
+
+import pytz
 
 from tradingagents.dataflows.bist import is_bist_yahoo_symbol, normalize_bist_yahoo_symbol
 from tradingagents.dataflows.kap.models import KapDisclosure
@@ -32,6 +33,7 @@ _EVENT_RULES: tuple[tuple[AlertCategory, int, tuple[str, ...]], ...] = (
     ("dividend", 95, ("kar payı", "temettü", "kâr payı")),
     ("capital", 95, ("sermaye artır", "bedelli", "bedelsiz", "sermaye azalt")),
     ("mna", 90, ("birleşme", "bölünme", "satın alma", "devralma", "devir")),
+    ("ownership", 90, ("geri alım", "pay geri alım")),
     ("commercial", 85, ("ihale", "sözleşme", "iş ilişkisi", "sipariş")),
     ("legal", 85, ("dava", "ceza", "soruşturma", "yaptırım", "faaliyet durdur")),
     ("operations", 80, ("yatırım", "kapasite", "üretim", "fabrika", "tesis")),
@@ -41,7 +43,7 @@ _EVENT_RULES: tuple[tuple[AlertCategory, int, tuple[str, ...]], ...] = (
 )
 
 _SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
-_ISTANBUL_TZ = ZoneInfo("Europe/Istanbul")
+_ISTANBUL_TZ = pytz.timezone("Europe/Istanbul")
 _STATE_VERSION = 2
 
 
@@ -127,7 +129,7 @@ def _market_datetime(value: datetime | None) -> datetime:
     if value is None:
         return datetime.now(_ISTANBUL_TZ)
     if value.tzinfo is None:
-        return value.replace(tzinfo=_ISTANBUL_TZ)
+        return _ISTANBUL_TZ.localize(value)
     return value.astimezone(_ISTANBUL_TZ)
 
 
@@ -315,14 +317,27 @@ class AlertStateStore:
             payload = self._load_unlocked()
             return tuple(dict(item) for item in payload["history"])
 
-    def ensure_capacity(self, tickers: Iterable[str], per_ticker_cap: int) -> None:
-        """Register successful tickers sharing this state and validate dedup capacity."""
+    def ensure_capacity(
+        self,
+        tickers: Iterable[str],
+        per_ticker_cap: int,
+        *,
+        active_tickers: Iterable[str] | None = None,
+    ) -> None:
+        """Register successful tickers and optionally retire inactive watchlist symbols."""
         canonical = WatchlistStore._validated_unique(tickers, strict=True)
+        active = (
+            None
+            if active_tickers is None
+            else set(WatchlistStore._validated_unique(active_tickers, strict=True))
+        )
         if per_ticker_cap < 1:
             raise ValueError("per_ticker_cap must be positive")
         with self.locked():
             payload = self._load_unlocked()
             tracked = list(payload["tracked_tickers"])
+            if active is not None:
+                tracked = [ticker for ticker in tracked if ticker in active]
             for ticker in canonical:
                 if ticker not in tracked:
                     tracked.append(ticker)
@@ -603,7 +618,11 @@ class KapWatchlistAlertService:
                     )
                 )
 
-        self.state.ensure_capacity(successful_tickers, self.max_disclosures_per_ticker)
+        self.state.ensure_capacity(
+            successful_tickers,
+            self.max_disclosures_per_ticker,
+            active_tickers=persisted_watchlist if tickers is None else None,
+        )
         candidate_alerts.sort(
             key=lambda item: (
                 _SEVERITY_RANK[item.severity],
