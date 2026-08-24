@@ -17,6 +17,7 @@ import time
 import unicodedata
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -52,8 +53,82 @@ _ISTANBUL_TZ = pytz.timezone("Europe/Istanbul")
 _STATE_VERSION = 2
 _ALERT_SUMMARY_LIMIT = 600
 _STRONG_TRANSFER_CONTEXT_STEMS = ("pay", "hisse", "varlik", "isletme", "istirak", "tesis")
-_GOVERNANCE_TRANSFER_STEMS = ("yonetim", "yetki", "gorev", "sorumluluk", "imza")
-_LEGAL_TESIS_CONTEXT_STEMS = ("rehin", "ipotek", "teminat", "intifa", "irtifak", "haciz")
+_GOVERNANCE_TRANSFER_STEMS = ("yonetim", "yetki", "gorev", "sorumluluk", "imza", "makam")
+_LEGAL_TESIS_CONTEXT_STEMS = (
+    "rehin",
+    "ipotek",
+    "teminat",
+    "intifa",
+    "irtifak",
+    "haciz",
+    "kefalet",
+)
+_CORPORATE_EVENT_CONTEXT_STEMS = (
+    "sirket",
+    "firma",
+    "ortaklik",
+    "isletme",
+    "istirak",
+    "grup",
+    "holding",
+    "tuzel",
+    "pay",
+    "hisse",
+    "sermaye",
+)
+_NON_CORPORATE_COMBINATION_STEMS = (
+    "hat",
+    "uretim",
+    "dosya",
+    "veri",
+    "sistem",
+    "trafik",
+    "yol",
+    "karayol",
+    "siparis",
+    "depo",
+    "akim",
+)
+_ACQUISITION_TARGET_STEMS = (
+    "pay",
+    "hisse",
+    "varlik",
+    "isletme",
+    "istirak",
+    "sirket",
+    "firma",
+    "ortaklik",
+    "marka",
+    "portfoy",
+    "fabrika",
+    "tesis",
+    "gayrimenkul",
+)
+_PROCUREMENT_TARGET_STEMS = (
+    "elektrik",
+    "enerji",
+    "dogalgaz",
+    "gaz",
+    "hammadde",
+    "malzeme",
+    "hizmet",
+    "ekipman",
+    "makine",
+    "urun",
+    "mal",
+    "yakit",
+    "parca",
+    "tedarik",
+    "lisans",
+    "yazilim",
+    "mobilya",
+    "bilgisayar",
+    "cihaz",
+    "stok",
+    "emtia",
+    "arac",
+)
+_NAME_CASE_SUFFIX_TOKENS = {"i", "yi", "u", "yu", "ni", "nu", "in", "nin"}
 
 
 def _normalize_event_text(value: str) -> str:
@@ -70,9 +145,13 @@ def _token_has_stem(token: str, stems: tuple[str, ...]) -> bool:
     return any(token.startswith(stem) for stem in stems)
 
 
+def _nearby_tokens(tokens: list[str], index: int, radius: int = 4) -> list[str]:
+    return tokens[max(0, index - radius) : index] + tokens[index + 1 : index + radius + 1]
+
+
 def _is_devir_token(token: str) -> bool:
-    """Match transfer inflections without accepting devrim/devriye or devreye."""
-    if token.startswith(("devrim", "devriye", "devreye")):
+    """Match transfer inflections without accepting unrelated devir-prefixed words."""
+    if token.startswith(("devrim", "devriye", "devreye", "devirdaim")):
         return False
     return token.startswith(("devir", "devri", "devred", "devret"))
 
@@ -83,29 +162,157 @@ def _devir_has_acquisition_context(text: str) -> bool:
     for index, token in enumerate(tokens):
         if not _is_devir_token(token):
             continue
-        nearby = tokens[max(0, index - 3) : index] + tokens[index + 1 : index + 4]
+        nearby = _nearby_tokens(tokens, index, radius=3)
         if any(_token_has_stem(item, _STRONG_TRANSFER_CONTEXT_STEMS) for item in nearby):
             return True
         if any(_token_has_stem(item, _GOVERNANCE_TRANSFER_STEMS) for item in nearby):
             continue
-        if any(item.startswith("sirket") for item in nearby):
+        if any(item.startswith(("sirket", "firma", "ortaklik")) for item in nearby):
             return True
     return False
 
 
+def _devralma_has_acquisition_context(text: str) -> bool:
+    """Separate company/asset takeovers from taking over a role or responsibility."""
+    tokens = re.findall(r"\w+", text)
+    for index, token in enumerate(tokens):
+        if not token.startswith("devral"):
+            continue
+        nearby = _nearby_tokens(tokens, index, radius=4)
+        if any(_token_has_stem(item, _GOVERNANCE_TRANSFER_STEMS) for item in nearby):
+            continue
+        if any(_token_has_stem(item, _ACQUISITION_TARGET_STEMS) for item in nearby):
+            return True
+        if "devralma" in token and any(item.startswith("islem") for item in nearby):
+            return True
+    return False
+
+
+def _birlesme_is_corporate(text: str) -> bool:
+    """Match corporate mergers without promoting ordinary operational combinations."""
+    tokens = re.findall(r"\w+", text)
+    for index, token in enumerate(tokens):
+        if token.startswith("birlesik"):
+            continue
+        if not token.startswith("birles"):
+            continue
+        nearby = _nearby_tokens(tokens, index, radius=4)
+        has_corporate_context = any(
+            _token_has_stem(item, _CORPORATE_EVENT_CONTEXT_STEMS) for item in nearby
+        )
+        has_operational_context = any(
+            _token_has_stem(item, _NON_CORPORATE_COMBINATION_STEMS) for item in nearby
+        )
+        if token.startswith(("birlestir", "birlestiril")):
+            if has_corporate_context:
+                return True
+            continue
+        if has_operational_context and not has_corporate_context:
+            continue
+        if token.startswith(
+            (
+                "birlesme",
+                "birlesti",
+                "birlesiyor",
+                "birlesecek",
+                "birlesmis",
+                "birlesmek",
+                "birleserek",
+            )
+        ):
+            return True
+    return False
+
+
+def _bolunme_is_corporate(text: str) -> bool:
+    """Match corporate split inflections while excluding adjectival infrastructure uses."""
+    tokens = re.findall(r"\w+", text)
+    for index, token in enumerate(tokens):
+        if not token.startswith("bolun"):
+            continue
+        nearby = _nearby_tokens(tokens, index, radius=4)
+        if token.startswith("bolunmus"):
+            following = tokens[index + 1 : index + 3]
+            if any(item.startswith(("yol", "karayol")) for item in following):
+                continue
+            has_corporate_context = any(
+                _token_has_stem(item, _CORPORATE_EVENT_CONTEXT_STEMS) for item in nearby
+            )
+            has_operational_context = any(
+                _token_has_stem(item, _NON_CORPORATE_COMBINATION_STEMS) for item in nearby
+            )
+            if token.startswith(("bolunmustur", "bolunmustu")):
+                if not has_operational_context or has_corporate_context:
+                    return True
+                continue
+            if has_corporate_context:
+                return True
+            continue
+        if token.startswith(
+            (
+                "bolunme",
+                "bolundu",
+                "bolunuyor",
+                "bolunecek",
+                "bolunerek",
+                "bolunur",
+                "bolunmek",
+            )
+        ):
+            has_operational_context = any(
+                _token_has_stem(item, _NON_CORPORATE_COMBINATION_STEMS) for item in nearby
+            )
+            has_corporate_context = any(
+                _token_has_stem(item, _CORPORATE_EVENT_CONTEXT_STEMS) for item in nearby
+            )
+            if has_operational_context and not has_corporate_context:
+                continue
+            return True
+    return False
+
+
+def _satin_alma_is_acquisition(text: str) -> bool:
+    """Require an acquisition target so procurement purchases are not classified as M&A."""
+    tokens = re.findall(r"\w+", text)
+    for index in range(len(tokens) - 1):
+        if tokens[index] != "satin" or not tokens[index + 1].startswith("al"):
+            continue
+
+        before = tokens[max(0, index - 6) : index]
+        for item in reversed(before):
+            if _token_has_stem(item, _PROCUREMENT_TARGET_STEMS):
+                break
+            if _token_has_stem(item, _ACQUISITION_TARGET_STEMS):
+                if item == "sirket":
+                    continue
+                return True
+        else:
+            pass
+
+        if (
+            "sirket" in before
+            and before
+            and before[-1] in _NAME_CASE_SUFFIX_TOKENS
+        ):
+            return True
+
+        after = tokens[index + 2 : index + 7]
+        for item in after:
+            if _token_has_stem(item, _PROCUREMENT_TARGET_STEMS):
+                break
+            if _token_has_stem(item, _ACQUISITION_TARGET_STEMS):
+                return True
+    return False
+
+
 def _tesis_is_operational(text: str) -> bool:
-    """Match physical facilities while excluding legal 'security interest creation' usage."""
+    """Match physical facilities while excluding security-interest creation language."""
     tokens = re.findall(r"\w+", text)
     for index, token in enumerate(tokens):
         if not token.startswith("tesis"):
             continue
-        previous = tokens[max(0, index - 4) : index]
-        following = tokens[index + 1 : index + 3]
-        has_legal_context = any(
-            _token_has_stem(item, _LEGAL_TESIS_CONTEXT_STEMS) for item in previous
-        )
-        is_creation_verb = any(item.startswith(("edil", "et")) for item in following)
-        if has_legal_context and is_creation_verb:
+        nearby = _nearby_tokens(tokens, index, radius=5)
+        if any(_token_has_stem(item, _LEGAL_TESIS_CONTEXT_STEMS) for item in nearby):
             continue
         return True
     return False
@@ -114,6 +321,19 @@ def _tesis_is_operational(text: str) -> bool:
 def _is_articles_of_association_context(text: str) -> bool:
     """Identify Ana/Esas Sözleşme disclosures so later shorthand stays excluded."""
     return re.search(r"(?<!\w)(?:esas|ana)\s+sozlesme\w*", text) is not None
+
+
+def _canonical_alert_id(alert_id: str) -> str:
+    """Use KAP's globally unique disclosure id across BIST share classes.
+
+    Legacy Phase 10 ids embedded the requested ticker (``KAP:TICKER.IS:123``).
+    Canonicalizing both legacy and new ids preserves deduplication during upgrade.
+    """
+    value = str(alert_id)
+    parts = value.split(":")
+    if len(parts) == 3 and parts[0] == "KAP" and is_bist_yahoo_symbol(parts[1]):
+        return f"KAP:{parts[2]}"
+    return value
 
 
 def _event_term_matches(text: str, term: str) -> bool:
@@ -153,21 +373,13 @@ def _event_term_matches(text: str, term: str) -> bool:
             for token in re.findall(r"\w+", text)
         )
     if normalized == "birlesme":
-        # Cover birleşme/birleşti/birleşiyor/etc., but not "Birleşik" place names.
-        return re.search(r"(?<!\w)birles(?!ik)\w*", text) is not None
+        return _birlesme_is_corporate(text)
     if normalized == "bolunme":
-        # Match corporate split noun/verb inflections without accepting the
-        # adjectival infrastructure phrase "bölünmüş yol".
-        return (
-            re.search(r"(?<!\w)bolun(?:me\w*|du\w*|uyor\w*|ecek\w*|erek\w*)", text)
-            is not None
-        )
+        return _bolunme_is_corporate(text)
     if normalized == "satin alma":
-        # "satın" already supplies strong acquisition context, so accept noun,
-        # passive and active verb inflections: alma/alımı/alınması/aldı/alacak/alıyor/etc.
-        return re.search(r"(?<!\w)satin\s+al\w*", text) is not None
+        return _satin_alma_is_acquisition(text)
     if normalized == "devralma":
-        return re.search(r"(?<!\w)devral\w*", text) is not None
+        return _devralma_has_acquisition_context(text)
     if normalized == "devir":
         return _devir_has_acquisition_context(text)
     if normalized == "sozlesme":
@@ -494,35 +706,45 @@ class AlertStateStore:
         alerts: Iterable[WatchlistAlert],
     ) -> tuple[WatchlistAlert, ...]:
         """Atomically claim newly discovered alerts into the retryable outbox."""
-        observed = list(dict.fromkeys(str(alert_id) for alert_id in seen_ids))
+        observed = list(
+            dict.fromkeys(_canonical_alert_id(str(alert_id)) for alert_id in seen_ids)
+        )
         candidates = tuple(alerts)
         with self.locked():
             payload = self._load_unlocked()
-            seen = list(payload["seen_ids"])
+            seen = list(
+                dict.fromkeys(
+                    _canonical_alert_id(str(alert_id)) for alert_id in payload["seen_ids"]
+                )
+            )
             previously_seen = set(seen)
             pending = list(payload["pending"])
             pending_ids = {
-                str(item["alert_id"])
+                _canonical_alert_id(str(item["alert_id"]))
                 for item in pending
                 if isinstance(item, dict) and "alert_id" in item
             }
             history_ids = {
-                str(item["alert_id"])
+                _canonical_alert_id(str(item["alert_id"]))
                 for item in payload["history"]
                 if isinstance(item, dict) and isinstance(item.get("alert_id"), str)
             }
 
             claimed: list[WatchlistAlert] = []
             for alert in candidates:
+                canonical_id = _canonical_alert_id(alert.alert_id)
                 if (
-                    alert.alert_id in previously_seen
-                    or alert.alert_id in pending_ids
-                    or alert.alert_id in history_ids
+                    canonical_id in previously_seen
+                    or canonical_id in pending_ids
+                    or canonical_id in history_ids
                 ):
                     continue
-                pending.append(alert.to_dict())
-                pending_ids.add(alert.alert_id)
-                claimed.append(alert)
+                canonical_alert = (
+                    alert if alert.alert_id == canonical_id else replace(alert, alert_id=canonical_id)
+                )
+                pending.append(canonical_alert.to_dict())
+                pending_ids.add(canonical_id)
+                claimed.append(canonical_alert)
 
             if observed:
                 observed_set = set(observed)
@@ -539,36 +761,40 @@ class AlertStateStore:
 
     def acknowledge(self, alert_ids: Iterable[str]) -> int:
         """Mark pending alerts delivered and move them into bounded history."""
-        requested = {str(alert_id) for alert_id in alert_ids}
+        requested = {_canonical_alert_id(str(alert_id)) for alert_id in alert_ids}
         if not requested:
             return 0
 
         with self.locked():
             payload = self._load_unlocked()
             pending = list(payload["pending"])
-            delivered = [
-                item
-                for item in pending
-                if isinstance(item, dict) and str(item.get("alert_id")) in requested
-            ]
+            delivered: list[dict[str, Any]] = []
+            remaining: list[dict[str, Any]] = []
+            for item in pending:
+                if not isinstance(item, dict):
+                    continue
+                item_id = _canonical_alert_id(str(item.get("alert_id", "")))
+                if item_id in requested:
+                    normalized_item = dict(item)
+                    normalized_item["alert_id"] = item_id
+                    delivered.append(normalized_item)
+                else:
+                    remaining.append(item)
             if not delivered:
                 return 0
 
-            payload["pending"] = [
-                item
-                for item in pending
-                if not (isinstance(item, dict) and str(item.get("alert_id")) in requested)
-            ]
+            payload["pending"] = remaining
 
             history = list(payload["history"])
             existing_history_ids = {
-                str(item.get("alert_id"))
+                _canonical_alert_id(str(item.get("alert_id")))
                 for item in history
                 if isinstance(item, dict) and item.get("alert_id") is not None
             }
             for item in delivered:
-                alert_id = str(item["alert_id"])
+                alert_id = _canonical_alert_id(str(item["alert_id"]))
                 if alert_id not in existing_history_ids:
+                    item["alert_id"] = alert_id
                     history.append(item)
                     existing_history_ids.add(alert_id)
 
@@ -746,7 +972,7 @@ class KapWatchlistAlertService:
 
             successful_tickers.append(ticker)
             for disclosure in result.disclosures:
-                alert_id = f"KAP:{ticker}:{disclosure.disclosure_id}"
+                alert_id = f"KAP:{disclosure.disclosure_id}"
                 observed_ids.append(alert_id)
                 category, score, severity = classify_kap_disclosure(disclosure)
                 if score < self.min_score:
