@@ -2,7 +2,24 @@ from typing import Annotated
 
 from langchain_core.tools import tool
 
+from tradingagents.dataflows.bist import (
+    build_bist_market_context,
+    historical_bist_fundamentals_guard,
+    is_bist_yahoo_symbol,
+)
 from tradingagents.dataflows.interface import route_to_vendor
+
+
+def _with_bist_context(ticker: str, result: str) -> str:
+    """Prefix BIST fundamental results with deterministic market metadata."""
+    if not is_bist_yahoo_symbol(ticker):
+        return result
+    return f"# {build_bist_market_context(ticker)}\n\n{result}"
+
+
+def _historical_guard(ticker: str, curr_date: str | None) -> str | None:
+    """Prevent current Yahoo snapshots from leaking into historical BIST runs."""
+    return historical_bist_fundamentals_guard(ticker, curr_date)
 
 
 @tool
@@ -19,7 +36,13 @@ def get_fundamentals(
     Returns:
         str: A formatted report containing comprehensive fundamental data
     """
-    return route_to_vendor("get_fundamentals", ticker, curr_date)
+    guard = _historical_guard(ticker, curr_date)
+    if guard:
+        return guard
+    return _with_bist_context(
+        ticker,
+        route_to_vendor("get_fundamentals", ticker, curr_date),
+    )
 
 
 @tool
@@ -38,7 +61,13 @@ def get_balance_sheet(
     Returns:
         str: A formatted report containing balance sheet data
     """
-    return route_to_vendor("get_balance_sheet", ticker, freq, curr_date)
+    guard = _historical_guard(ticker, curr_date)
+    if guard:
+        return guard
+    return _with_bist_context(
+        ticker,
+        route_to_vendor("get_balance_sheet", ticker, freq, curr_date),
+    )
 
 
 @tool
@@ -57,7 +86,13 @@ def get_cashflow(
     Returns:
         str: A formatted report containing cash flow statement data
     """
-    return route_to_vendor("get_cashflow", ticker, freq, curr_date)
+    guard = _historical_guard(ticker, curr_date)
+    if guard:
+        return guard
+    return _with_bist_context(
+        ticker,
+        route_to_vendor("get_cashflow", ticker, freq, curr_date),
+    )
 
 
 @tool
@@ -76,4 +111,10 @@ def get_income_statement(
     Returns:
         str: A formatted report containing income statement data
     """
-    return route_to_vendor("get_income_statement", ticker, freq, curr_date)
+    guard = _historical_guard(ticker, curr_date)
+    if guard:
+        return guard
+    return _with_bist_context(
+        ticker,
+        route_to_vendor("get_income_statement", ticker, freq, curr_date),
+    )
