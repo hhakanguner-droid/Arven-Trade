@@ -8,8 +8,11 @@ into alerts.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
+import tempfile
+import time
 import unicodedata
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
@@ -39,6 +42,7 @@ _EVENT_RULES: tuple[tuple[AlertCategory, int, tuple[str, ...]], ...] = (
 
 _SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 _ISTANBUL_TZ = ZoneInfo("Europe/Istanbul")
+_STATE_VERSION = 2
 
 
 def _normalize_event_text(value: str) -> str:
@@ -108,6 +112,16 @@ def _alert_significance_key(disclosure: object) -> tuple[int, datetime]:
     return score, published_at
 
 
+def _alert_dict_priority(item: Mapping[str, Any]) -> tuple[int, int, str]:
+    severity = str(item.get("severity", "low"))
+    try:
+        score = int(item.get("score", 0))
+    except (TypeError, ValueError):
+        score = 0
+    published_at = str(item.get("published_at", ""))
+    return _SEVERITY_RANK.get(severity, -1), score, published_at
+
+
 def _market_datetime(value: datetime | None) -> datetime:
     """Return a datetime anchored to the Borsa Istanbul calendar."""
     if value is None:
@@ -118,10 +132,30 @@ def _market_datetime(value: datetime | None) -> datetime:
 
 
 def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
+    """Atomically replace a JSON file without sharing a fixed temporary path."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+            tmp_path = Path(handle.name)
+        os.replace(tmp_path, path)
+        tmp_path = None
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def _read_json_object(path: Path) -> dict[str, Any] | None:
@@ -148,8 +182,17 @@ def _exclusive_file_lock(path: Path) -> Iterator[None]:
             if handle.tell() == 0:
                 handle.write(b"\0")
                 handle.flush()
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+
+            while True:
+                handle.seek(0)
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError as exc:
+                    if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                        raise
+                    time.sleep(0.1)
+
             try:
                 yield
             finally:
@@ -171,39 +214,36 @@ class WatchlistStore:
     def __init__(self, path: str | Path, seed_tickers: Iterable[str] = ()) -> None:
         self.path = Path(path).expanduser()
         self.seed_tickers = tuple(seed_tickers)
+        self.lock_path = self.path.with_name(f"{self.path.name}.lock")
 
     def list(self) -> tuple[str, ...]:
-        payload = _read_json_object(self.path)
-        if payload is None:
-            tickers = self._validated_unique(self.seed_tickers)
-            self._save(tickers)
-            return tuple(tickers)
-        raw = payload.get("tickers", [])
-        if not isinstance(raw, list):
-            raise ValueError(f"watchlist tickers must be a JSON list: {self.path}")
-        return tuple(self._validated_unique(raw, strict=True))
+        with _exclusive_file_lock(self.lock_path):
+            return tuple(self._list_unlocked())
 
     def add(self, ticker: str) -> bool:
         canonical = normalize_bist_yahoo_symbol(ticker)
-        tickers = list(self.list())
-        if canonical in tickers:
-            return False
-        tickers.append(canonical)
-        self._save(tickers)
-        return True
+        with _exclusive_file_lock(self.lock_path):
+            tickers = self._list_unlocked()
+            if canonical in tickers:
+                return False
+            tickers.append(canonical)
+            self._save_unlocked(tickers)
+            return True
 
     def remove(self, ticker: str) -> bool:
         canonical = normalize_bist_yahoo_symbol(ticker)
-        tickers = list(self.list())
-        if canonical not in tickers:
-            return False
-        tickers.remove(canonical)
-        self._save(tickers)
-        return True
+        with _exclusive_file_lock(self.lock_path):
+            tickers = self._list_unlocked()
+            if canonical not in tickers:
+                return False
+            tickers.remove(canonical)
+            self._save_unlocked(tickers)
+            return True
 
     def replace(self, tickers: Iterable[str]) -> tuple[str, ...]:
         validated = self._validated_unique(tickers, strict=True)
-        self._save(validated)
+        with _exclusive_file_lock(self.lock_path):
+            self._save_unlocked(validated)
         return tuple(validated)
 
     @staticmethod
@@ -219,12 +259,25 @@ class WatchlistStore:
                 result.append(canonical)
         return result
 
-    def _save(self, tickers: Iterable[str]) -> None:
+    def _list_unlocked(self) -> list[str]:
+        payload = _read_json_object(self.path)
+        if payload is None:
+            tickers = self._validated_unique(self.seed_tickers)
+            self._save_unlocked(tickers)
+            return tickers
+        if payload.get("version") != 1 or "tickers" not in payload:
+            raise ValueError(f"invalid watchlist schema: {self.path}")
+        raw = payload["tickers"]
+        if not isinstance(raw, list):
+            raise ValueError(f"watchlist tickers must be a JSON list: {self.path}")
+        return self._validated_unique(raw, strict=True)
+
+    def _save_unlocked(self, tickers: Iterable[str]) -> None:
         _atomic_write_json(self.path, {"version": 1, "tickers": list(tickers)})
 
 
 class AlertStateStore:
-    """Persistent de-duplication state and bounded alert history."""
+    """Persistent discovery de-duplication, retryable outbox, and alert history."""
 
     def __init__(
         self,
@@ -242,55 +295,211 @@ class AlertStateStore:
 
     @contextmanager
     def locked(self) -> Iterator[None]:
-        """Serialize the read/check/claim cycle across workers."""
+        """Serialize state mutations across workers."""
         with _exclusive_file_lock(self.lock_path):
             yield
 
     def seen_ids(self) -> tuple[str, ...]:
-        payload = self._load()
-        return tuple(payload["seen_ids"])
+        with self.locked():
+            payload = self._load_unlocked()
+            return tuple(payload["seen_ids"])
+
+    def pending(self) -> tuple[dict[str, Any], ...]:
+        """Return alerts waiting for downstream delivery acknowledgement."""
+        with self.locked():
+            payload = self._load_unlocked()
+            return tuple(dict(item) for item in payload["pending"])
 
     def history(self) -> tuple[dict[str, Any], ...]:
-        payload = self._load()
-        return tuple(payload["history"])
+        with self.locked():
+            payload = self._load_unlocked()
+            return tuple(dict(item) for item in payload["history"])
 
-    def record(self, seen_ids: Iterable[str], alerts: Iterable[WatchlistAlert]) -> None:
-        payload = self._load()
-        seen = list(payload["seen_ids"])
-        for alert_id in seen_ids:
-            if alert_id not in seen:
-                seen.append(alert_id)
-        seen = seen[-self.seen_limit :]
+    def ensure_capacity(self, tickers: Iterable[str], per_ticker_cap: int) -> None:
+        """Register every ticker sharing this state and validate safe dedup capacity."""
+        canonical = WatchlistStore._validated_unique(tickers, strict=True)
+        if per_ticker_cap < 1:
+            raise ValueError("per_ticker_cap must be positive")
+        with self.locked():
+            payload = self._load_unlocked()
+            tracked = list(payload["tracked_tickers"])
+            for ticker in canonical:
+                if ticker not in tracked:
+                    tracked.append(ticker)
+            required = len(tracked) * int(per_ticker_cap)
+            if self.seen_limit < required:
+                raise ValueError(
+                    "alert_seen_limit must be at least tracked_ticker_count * "
+                    "kap_alert_max_disclosures to prevent duplicate alerts"
+                )
+            if tracked != payload["tracked_tickers"]:
+                payload["tracked_tickers"] = tracked
+                self._save_unlocked(payload)
 
-        history = list(payload["history"])
-        existing_history_ids = {
-            item.get("alert_id") for item in history if isinstance(item, dict)
+    def claim(
+        self,
+        seen_ids: Iterable[str],
+        alerts: Iterable[WatchlistAlert],
+    ) -> tuple[WatchlistAlert, ...]:
+        """Atomically claim newly discovered alerts into the retryable outbox."""
+        observed = list(dict.fromkeys(str(alert_id) for alert_id in seen_ids))
+        candidates = tuple(alerts)
+        with self.locked():
+            payload = self._load_unlocked()
+            seen = list(payload["seen_ids"])
+            seen_set = set(seen)
+            pending = list(payload["pending"])
+            pending_ids = {
+                str(item["alert_id"])
+                for item in pending
+                if isinstance(item, dict) and "alert_id" in item
+            }
+
+            claimed: list[WatchlistAlert] = []
+            for alert in candidates:
+                if alert.alert_id in seen_set or alert.alert_id in pending_ids:
+                    continue
+                pending.append(alert.to_dict())
+                pending_ids.add(alert.alert_id)
+                claimed.append(alert)
+
+            for alert_id in observed:
+                if alert_id not in seen_set:
+                    seen.append(alert_id)
+                    seen_set.add(alert_id)
+
+            if len(seen) > self.seen_limit:
+                seen = seen[-self.seen_limit :]
+
+            payload["seen_ids"] = seen
+            payload["pending"] = pending
+            self._save_unlocked(payload)
+            return tuple(claimed)
+
+    def acknowledge(self, alert_ids: Iterable[str]) -> int:
+        """Mark pending alerts delivered and move them into bounded history."""
+        requested = {str(alert_id) for alert_id in alert_ids}
+        if not requested:
+            return 0
+
+        with self.locked():
+            payload = self._load_unlocked()
+            pending = list(payload["pending"])
+            delivered = [
+                item
+                for item in pending
+                if isinstance(item, dict) and str(item.get("alert_id")) in requested
+            ]
+            if not delivered:
+                return 0
+
+            payload["pending"] = [
+                item
+                for item in pending
+                if not (isinstance(item, dict) and str(item.get("alert_id")) in requested)
+            ]
+
+            history = list(payload["history"])
+            existing_history_ids = {
+                str(item.get("alert_id"))
+                for item in history
+                if isinstance(item, dict) and item.get("alert_id") is not None
+            }
+            for item in delivered:
+                alert_id = str(item["alert_id"])
+                if alert_id not in existing_history_ids:
+                    history.append(item)
+                    existing_history_ids.add(alert_id)
+
+            history.sort(key=_alert_dict_priority, reverse=True)
+            payload["history"] = history[: self.history_limit]
+            self._save_unlocked(payload)
+            return len(delivered)
+
+    def _empty(self) -> dict[str, Any]:
+        return {
+            "version": _STATE_VERSION,
+            "seen_ids": [],
+            "pending": [],
+            "history": [],
+            "tracked_tickers": [],
         }
-        for alert in alerts:
-            if alert.alert_id not in existing_history_ids:
-                history.append(alert.to_dict())
-                existing_history_ids.add(alert.alert_id)
-        history = history[-self.history_limit :]
-        _atomic_write_json(
-            self.path,
-            {"version": 1, "seen_ids": seen, "history": history},
-        )
 
-    def _load(self) -> dict[str, Any]:
+    def _load_unlocked(self) -> dict[str, Any]:
         payload = _read_json_object(self.path)
         if payload is None:
-            return {"version": 1, "seen_ids": [], "history": []}
-        seen = payload.get("seen_ids", [])
-        history = payload.get("history", [])
+            return self._empty()
+
+        version = payload.get("version")
+        if version == 1:
+            if "seen_ids" not in payload or "history" not in payload:
+                raise ValueError(f"invalid alert state schema: {self.path}")
+            seen = payload["seen_ids"]
+            history = payload["history"]
+            if not isinstance(seen, list) or not all(isinstance(item, str) for item in seen):
+                raise ValueError(f"alert seen_ids must be a JSON string list: {self.path}")
+            if not isinstance(history, list) or not all(isinstance(item, dict) for item in history):
+                raise ValueError(f"alert history must be a JSON object list: {self.path}")
+            tracked: list[str] = []
+            for alert_id in seen:
+                parts = alert_id.split(":", 2)
+                if len(parts) == 3 and parts[0] == "KAP" and is_bist_yahoo_symbol(parts[1]):
+                    if parts[1] not in tracked:
+                        tracked.append(parts[1])
+            return {
+                "version": _STATE_VERSION,
+                "seen_ids": list(seen),
+                "pending": [],
+                "history": list(history),
+                "tracked_tickers": tracked,
+            }
+
+        if version != _STATE_VERSION:
+            raise ValueError(f"unsupported alert state version: {self.path}")
+
+        required = {"seen_ids", "pending", "history", "tracked_tickers"}
+        if not required.issubset(payload):
+            raise ValueError(f"invalid alert state schema: {self.path}")
+
+        seen = payload["seen_ids"]
+        pending = payload["pending"]
+        history = payload["history"]
+        tracked = payload["tracked_tickers"]
+
         if not isinstance(seen, list) or not all(isinstance(item, str) for item in seen):
             raise ValueError(f"alert seen_ids must be a JSON string list: {self.path}")
+        if not isinstance(pending, list) or not all(isinstance(item, dict) for item in pending):
+            raise ValueError(f"alert pending must be a JSON object list: {self.path}")
+        if not all(isinstance(item.get("alert_id"), str) for item in pending):
+            raise ValueError(f"alert pending entries require alert_id: {self.path}")
         if not isinstance(history, list) or not all(isinstance(item, dict) for item in history):
             raise ValueError(f"alert history must be a JSON object list: {self.path}")
-        return {"version": 1, "seen_ids": seen, "history": history}
+        if not isinstance(tracked, list) or not all(isinstance(item, str) for item in tracked):
+            raise ValueError(f"alert tracked_tickers must be a JSON string list: {self.path}")
+        if not all(is_bist_yahoo_symbol(item) for item in tracked):
+            raise ValueError(f"alert tracked_tickers contains a non-BIST symbol: {self.path}")
+
+        return {
+            "version": _STATE_VERSION,
+            "seen_ids": list(seen),
+            "pending": list(pending),
+            "history": list(history),
+            "tracked_tickers": list(tracked),
+        }
+
+    def _save_unlocked(self, payload: Mapping[str, Any]) -> None:
+        normalized = {
+            "version": _STATE_VERSION,
+            "seen_ids": list(payload["seen_ids"]),
+            "pending": list(payload["pending"]),
+            "history": list(payload["history"]),
+            "tracked_tickers": list(payload["tracked_tickers"]),
+        }
+        _atomic_write_json(self.path, normalized)
 
 
 class KapWatchlistAlertService:
-    """Poll KAP for watched BIST equities and emit only new important events."""
+    """Poll KAP for watched BIST equities and emit only newly claimed important events."""
 
     def __init__(
         self,
@@ -339,80 +548,86 @@ class KapWatchlistAlertService:
 
         end = checked_at.date()
         start = end - timedelta(days=self.lookback_days)
-        requested = self.watchlist.list() if tickers is None else tuple(tickers)
+        persisted_watchlist = self.watchlist.list()
+        requested = persisted_watchlist if tickers is None else tuple(tickers)
         canonical_tickers = WatchlistStore._validated_unique(requested, strict=True)
-        required_seen_capacity = len(canonical_tickers) * self.max_disclosures_per_ticker
-        if self.state.seen_limit < required_seen_capacity:
-            raise ValueError(
-                "alert_seen_limit must be at least watchlist_size * "
-                "kap_alert_max_disclosures to prevent duplicate alerts"
+        capacity_tickers = WatchlistStore._validated_unique(
+            (*persisted_watchlist, *canonical_tickers),
+            strict=True,
+        )
+        self.state.ensure_capacity(capacity_tickers, self.max_disclosures_per_ticker)
+
+        candidate_alerts: list[WatchlistAlert] = []
+        observed_ids: list[str] = []
+        statuses: list[AlertSourceStatus] = []
+
+        for ticker in canonical_tickers:
+            result = self.kap_service.get_disclosures(
+                ticker=ticker,
+                start_date=start,
+                end_date=end,
+                max_disclosures=self.max_disclosures_per_ticker,
+                include_attachments=False,
+                significance_key=_alert_significance_key,
             )
-
-        with self.state.locked():
-            already_seen = set(self.state.seen_ids())
-            new_alerts: list[WatchlistAlert] = []
-            observed_ids: list[str] = []
-            statuses: list[AlertSourceStatus] = []
-
-            for ticker in canonical_tickers:
-                result = self.kap_service.get_disclosures(
+            statuses.append(
+                AlertSourceStatus(
                     ticker=ticker,
-                    start_date=start,
-                    end_date=end,
-                    max_disclosures=self.max_disclosures_per_ticker,
-                    include_attachments=False,
-                    significance_key=_alert_significance_key,
+                    source="KAP",
+                    status=result.status,
+                    message=result.message,
                 )
-                statuses.append(
-                    AlertSourceStatus(
-                        ticker=ticker,
-                        source="KAP",
-                        status=result.status,
-                        message=result.message,
-                    )
-                )
-                if not result.available:
-                    continue
-
-                for disclosure in result.disclosures:
-                    alert_id = f"KAP:{ticker}:{disclosure.disclosure_id}"
-                    observed_ids.append(alert_id)
-                    category, score, severity = classify_kap_disclosure(disclosure)
-                    if score < self.min_score or alert_id in already_seen:
-                        continue
-                    new_alerts.append(
-                        WatchlistAlert(
-                            alert_id=alert_id,
-                            source="KAP",
-                            ticker=ticker,
-                            published_at=disclosure.published_at,
-                            title=disclosure.subject,
-                            summary=disclosure.summary,
-                            url=disclosure.url,
-                            category=category,
-                            severity=severity,
-                            score=score,
-                            disclosure_id=disclosure.disclosure_id,
-                            is_corrective=disclosure.is_corrective,
-                            has_attachment=disclosure.has_attachment,
-                        )
-                    )
-
-            new_alerts.sort(
-                key=lambda item: (
-                    _SEVERITY_RANK[item.severity],
-                    item.score,
-                    item.published_at.isoformat(),
-                ),
-                reverse=True,
             )
-            self.state.record(observed_ids, new_alerts)
+            if not result.available:
+                continue
+
+            for disclosure in result.disclosures:
+                alert_id = f"KAP:{ticker}:{disclosure.disclosure_id}"
+                observed_ids.append(alert_id)
+                category, score, severity = classify_kap_disclosure(disclosure)
+                if score < self.min_score:
+                    continue
+                candidate_alerts.append(
+                    WatchlistAlert(
+                        alert_id=alert_id,
+                        source="KAP",
+                        ticker=ticker,
+                        published_at=disclosure.published_at,
+                        title=disclosure.subject,
+                        summary=disclosure.summary,
+                        url=disclosure.url,
+                        category=category,
+                        severity=severity,
+                        score=score,
+                        disclosure_id=disclosure.disclosure_id,
+                        is_corrective=disclosure.is_corrective,
+                        has_attachment=disclosure.has_attachment,
+                    )
+                )
+
+        candidate_alerts.sort(
+            key=lambda item: (
+                _SEVERITY_RANK[item.severity],
+                item.score,
+                item.published_at.isoformat(),
+            ),
+            reverse=True,
+        )
+        claimed_alerts = self.state.claim(observed_ids, candidate_alerts)
 
         return WatchlistAlertBatch(
             checked_at=checked_at,
-            alerts=tuple(new_alerts),
+            alerts=claimed_alerts,
             source_statuses=tuple(statuses),
         )
+
+    def pending_alerts(self) -> tuple[dict[str, Any], ...]:
+        """Expose the retryable outbox for failed or deferred deliveries."""
+        return self.state.pending()
+
+    def acknowledge_alerts(self, alert_ids: Iterable[str]) -> int:
+        """Acknowledge successful downstream delivery of pending alerts."""
+        return self.state.acknowledge(alert_ids)
 
 
 def create_watchlist_alert_service(config: Mapping[str, Any] | None = None) -> KapWatchlistAlertService:
