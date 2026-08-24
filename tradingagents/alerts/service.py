@@ -17,7 +17,6 @@ import time
 import unicodedata
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -129,7 +128,21 @@ _PROCUREMENT_TARGET_STEMS = (
     "emtia",
     "arac",
 )
+_PRODUCT_RECALL_STEMS = (
+    "urun",
+    "mal",
+    "parti",
+    "seri",
+    "tuketici",
+    "guvenlik",
+    "arac",
+    "cihaz",
+    "gida",
+    "toplat",
+    "cagir",
+)
 _NAME_CASE_SUFFIX_TOKENS = {"i", "yi", "u", "yu", "ni", "nu", "in", "nin"}
+_BARE_COMPANY_TOKENS = {"sirket", "firma", "ortaklik", "isletme"}
 
 
 def _normalize_event_text(value: str) -> str:
@@ -151,14 +164,14 @@ def _nearby_tokens(tokens: list[str], index: int, radius: int = 4) -> list[str]:
 
 
 def _is_acquisition_target_token(token: str) -> bool:
-    """Recognize explicit acquisition targets without treating bare 'şirket' as its actor."""
-    if token == "sirket":
+    """Recognize explicit acquisition targets without treating bare company actor words as targets."""
+    if token in _BARE_COMPANY_TOKENS:
         return False
     return _token_has_stem(token, _ACQUISITION_TARGET_STEMS)
 
 
 def _looks_like_named_company_target(before: list[str]) -> bool:
-    """Recognize Turkish case-marked company names before 'satın al...' wording."""
+    """Recognize Turkish case-marked company names before acquisition verbs."""
     if not before or before[-1] not in _NAME_CASE_SUFFIX_TOKENS:
         return False
     if "sirket" in before[:-1]:
@@ -203,6 +216,11 @@ def _devralma_has_acquisition_context(text: str) -> bool:
             continue
         nearby = _nearby_tokens(tokens, index, radius=4)
         if any(_is_acquisition_target_token(item) for item in nearby):
+            return True
+        before = tokens[max(0, index - 6) : index]
+        if _looks_like_named_company_target(before):
+            return True
+        if token.startswith("devralin") and before and before[-1] in _BARE_COMPANY_TOKENS:
             return True
         if any(_token_has_stem(item, _GOVERNANCE_TRANSFER_STEMS) for item in nearby):
             continue
@@ -284,6 +302,11 @@ def _bolunme_is_corporate(text: str) -> bool:
     return False
 
 
+def _purchase_form_can_name_target(purchase_token: str) -> bool:
+    """Return true for noun/passive purchase forms where a preceding company is the target."""
+    return purchase_token.startswith(("alma", "alim", "alin"))
+
+
 def _satin_alma_is_acquisition(text: str) -> bool:
     """Require an acquisition target so procurement purchases are not classified as M&A."""
     tokens = re.findall(r"\w+", text)
@@ -291,6 +314,7 @@ def _satin_alma_is_acquisition(text: str) -> bool:
         if tokens[index] != "satin" or not tokens[index + 1].startswith("al"):
             continue
 
+        purchase_token = tokens[index + 1]
         before = tokens[max(0, index - 6) : index]
         before_decision: bool | None = None
         for item in reversed(before):
@@ -306,12 +330,18 @@ def _satin_alma_is_acquisition(text: str) -> bool:
             continue
         if _looks_like_named_company_target(before):
             return True
+        if (
+            before
+            and before[-1] in _BARE_COMPANY_TOKENS
+            and _purchase_form_can_name_target(purchase_token)
+        ):
+            return True
 
         after = tokens[index + 2 : index + 7]
         for item in after:
             if _token_has_stem(item, _PROCUREMENT_TARGET_STEMS):
                 break
-            if _is_acquisition_target_token(item) or item == "sirket":
+            if _is_acquisition_target_token(item) or item in _BARE_COMPANY_TOKENS:
                 return True
     return False
 
@@ -338,6 +368,8 @@ def _share_repurchase_matches(text: str) -> bool:
         nearby = _nearby_tokens(tokens, index, radius=5)
         if any(item.startswith(("pay", "hisse")) for item in nearby):
             return True
+        if any(_token_has_stem(item, _PRODUCT_RECALL_STEMS) for item in nearby):
+            continue
         if any(item.startswith("program") for item in nearby):
             return True
     return False
@@ -352,7 +384,7 @@ def _canonical_alert_id(alert_id: str) -> str:
     """Use KAP's globally unique disclosure id across BIST share classes.
 
     Legacy Phase 10 ids embedded the requested ticker (``KAP:TICKER.IS:123``).
-    Canonicalizing both legacy and new ids preserves deduplication during upgrade.
+    Canonicalizing legacy ids lets old state suppress new company-level ids.
     """
     value = str(alert_id)
     parts = value.split(":")
@@ -733,18 +765,20 @@ class AlertStateStore:
         alerts: Iterable[WatchlistAlert],
     ) -> tuple[WatchlistAlert, ...]:
         """Atomically claim newly discovered alerts into the retryable outbox."""
-        observed = list(
-            dict.fromkeys(_canonical_alert_id(str(alert_id)) for alert_id in seen_ids)
-        )
+        observed: list[str] = []
+        observed_keys: set[str] = set()
+        for alert_id in seen_ids:
+            raw_id = str(alert_id)
+            key = _canonical_alert_id(raw_id)
+            if key not in observed_keys:
+                observed.append(raw_id)
+                observed_keys.add(key)
+
         candidates = tuple(alerts)
         with self.locked():
             payload = self._load_unlocked()
-            seen = list(
-                dict.fromkeys(
-                    _canonical_alert_id(str(alert_id)) for alert_id in payload["seen_ids"]
-                )
-            )
-            previously_seen = set(seen)
+            seen = list(payload["seen_ids"])
+            previously_seen = {_canonical_alert_id(str(alert_id)) for alert_id in seen}
             pending = list(payload["pending"])
             pending_ids = {
                 _canonical_alert_id(str(item["alert_id"]))
@@ -766,16 +800,16 @@ class AlertStateStore:
                     or canonical_id in history_ids
                 ):
                     continue
-                canonical_alert = (
-                    alert if alert.alert_id == canonical_id else replace(alert, alert_id=canonical_id)
-                )
-                pending.append(canonical_alert.to_dict())
+                pending.append(alert.to_dict())
                 pending_ids.add(canonical_id)
-                claimed.append(canonical_alert)
+                claimed.append(alert)
 
             if observed:
-                observed_set = set(observed)
-                seen = [alert_id for alert_id in seen if alert_id not in observed_set]
+                seen = [
+                    alert_id
+                    for alert_id in seen
+                    if _canonical_alert_id(str(alert_id)) not in observed_keys
+                ]
                 seen.extend(observed)
 
             if len(seen) > self.seen_limit:
@@ -795,19 +829,17 @@ class AlertStateStore:
         with self.locked():
             payload = self._load_unlocked()
             pending = list(payload["pending"])
-            delivered: list[dict[str, Any]] = []
+            delivered_by_id: dict[str, dict[str, Any]] = {}
             remaining: list[dict[str, Any]] = []
             for item in pending:
                 if not isinstance(item, dict):
                     continue
                 item_id = _canonical_alert_id(str(item.get("alert_id", "")))
                 if item_id in requested:
-                    normalized_item = dict(item)
-                    normalized_item["alert_id"] = item_id
-                    delivered.append(normalized_item)
+                    delivered_by_id.setdefault(item_id, item)
                 else:
                     remaining.append(item)
-            if not delivered:
+            if not delivered_by_id:
                 return 0
 
             payload["pending"] = remaining
@@ -818,17 +850,15 @@ class AlertStateStore:
                 for item in history
                 if isinstance(item, dict) and item.get("alert_id") is not None
             }
-            for item in delivered:
-                alert_id = _canonical_alert_id(str(item["alert_id"]))
-                if alert_id not in existing_history_ids:
-                    item["alert_id"] = alert_id
+            for canonical_id, item in delivered_by_id.items():
+                if canonical_id not in existing_history_ids:
                     history.append(item)
-                    existing_history_ids.add(alert_id)
+                    existing_history_ids.add(canonical_id)
 
             history.sort(key=_alert_dict_priority, reverse=True)
             payload["history"] = history[: self.history_limit]
             self._save_unlocked(payload)
-            return len(delivered)
+            return len(delivered_by_id)
 
     def _empty(self) -> dict[str, Any]:
         return {
