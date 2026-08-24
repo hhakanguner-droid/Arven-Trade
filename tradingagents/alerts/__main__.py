@@ -4,6 +4,8 @@ Examples:
     python -m tradingagents.alerts list
     python -m tradingagents.alerts add THYAO.IS
     python -m tradingagents.alerts check --json
+    python -m tradingagents.alerts pending --json
+    python -m tradingagents.alerts ack KAP:THYAO.IS:123456
 """
 
 from __future__ import annotations
@@ -28,9 +30,26 @@ def _build_parser() -> argparse.ArgumentParser:
     check = subparsers.add_parser("check", help="Check KAP for new important events")
     check.add_argument("--json", action="store_true", dest="as_json")
 
-    history = subparsers.add_parser("history", help="Show persisted alert history")
+    pending = subparsers.add_parser("pending", help="Show alerts waiting for delivery acknowledgement")
+    pending.add_argument("--json", action="store_true", dest="as_json")
+
+    ack = subparsers.add_parser("ack", help="Acknowledge successfully delivered alert IDs")
+    ack.add_argument("alert_ids", nargs="+")
+
+    history = subparsers.add_parser("history", help="Show delivered alert history")
     history.add_argument("--json", action="store_true", dest="as_json")
     return parser
+
+
+def _check_exit_code(batch) -> int:
+    statuses = tuple(batch.source_statuses)
+    if not statuses:
+        return 0
+    if any(status.status == "ok" for status in statuses):
+        return 0
+    if all(status.status == "disabled" for status in statuses):
+        return 0
+    return 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -54,9 +73,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "check":
         batch = service.check_watchlist()
+        exit_code = _check_exit_code(batch)
         if args.as_json:
             print(json.dumps(batch.to_dict(), ensure_ascii=False, indent=2))
-            return 0
+            return exit_code
         if not batch.alerts:
             print("Yeni önemli KAP bildirimi yok.")
         for alert in batch.alerts:
@@ -67,6 +87,23 @@ def main(argv: list[str] | None = None) -> int:
         for status in batch.source_statuses:
             if status.status != "ok":
                 print(f"[{status.source}:{status.ticker}] {status.status}: {status.message}")
+        return exit_code
+
+    if args.command == "pending":
+        pending_alerts = service.pending_alerts()
+        if args.as_json:
+            print(json.dumps(pending_alerts, ensure_ascii=False, indent=2))
+            return 0
+        for item in pending_alerts:
+            print(
+                f"[{str(item.get('severity', '')).upper()}] "
+                f"{item.get('ticker', '')} | {item.get('title', '')} | {item.get('alert_id', '')}"
+            )
+        return 0
+
+    if args.command == "ack":
+        acknowledged = service.acknowledge_alerts(args.alert_ids)
+        print(f"acknowledged:{acknowledged}")
         return 0
 
     if args.command == "history":
