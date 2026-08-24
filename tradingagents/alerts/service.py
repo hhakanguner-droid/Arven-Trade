@@ -98,6 +98,14 @@ def _event_term_matches(text: str, term: str) -> bool:
             token in accepted_tokens or token.startswith("cezalandir")
             for token in re.findall(r"\w+", text)
         )
+    if normalized == "sozlesme":
+        # Commercial contracts should not be confused with the corporate
+        # "Esas Sözleşme" (articles of association) and its inflections.
+        tokens = re.findall(r"\w+", text)
+        return any(
+            token.startswith("sozlesme") and (index == 0 or tokens[index - 1] != "esas")
+            for index, token in enumerate(tokens)
+        )
     if normalized == "pay alim satim":
         # KAP commonly uses both spaced and hyphenated forms.
         return re.search(r"(?<!\w)pay\s+alim(?:\s*-\s*|\s+)satim(?!\w)", text) is not None
@@ -619,8 +627,13 @@ class KapWatchlistAlertService:
 
         end = checked_at.date()
         start = end - timedelta(days=self.lookback_days)
-        persisted_watchlist = self.watchlist.list()
-        requested = persisted_watchlist if tickers is None else tuple(tickers)
+        if tickers is None:
+            persisted_watchlist = self.watchlist.list()
+            requested = persisted_watchlist
+            active_tickers: Iterable[str] | None = persisted_watchlist
+        else:
+            requested = tuple(tickers)
+            active_tickers = None
         canonical_tickers = WatchlistStore._validated_unique(requested, strict=True)
 
         candidate_alerts: list[WatchlistAlert] = []
@@ -677,7 +690,7 @@ class KapWatchlistAlertService:
         self.state.ensure_capacity(
             successful_tickers,
             self.max_disclosures_per_ticker,
-            active_tickers=persisted_watchlist if tickers is None else None,
+            active_tickers=active_tickers,
         )
         candidate_alerts.sort(
             key=lambda item: (
