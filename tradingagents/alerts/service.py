@@ -11,6 +11,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import re
 import tempfile
 import time
 import unicodedata
@@ -57,6 +58,16 @@ def _normalize_event_text(value: str) -> str:
     )
 
 
+def _event_term_matches(text: str, term: str) -> bool:
+    """Match alert terms without treating investor communications as investments."""
+    normalized = _normalize_event_text(term)
+    if normalized == "yatirim":
+        # Keep Turkish inflections such as "yatırımı"/"yatırımlar" while
+        # excluding the distinct investor stem "yatırımcı...".
+        return re.search(r"(?<!\w)yatirim(?!ci)", text) is not None
+    return normalized in text
+
+
 def _classify_event_fields(
     subject: str,
     summary: str,
@@ -73,7 +84,7 @@ def _classify_event_fields(
     for candidate, weight, terms in _EVENT_RULES:
         if weight <= score:
             continue
-        if any(_normalize_event_text(term) in text for term in terms):
+        if any(_event_term_matches(text, term) for term in terms):
             category, score = candidate, weight
 
     if is_corrective and score:
@@ -369,10 +380,19 @@ class AlertStateStore:
                 for item in pending
                 if isinstance(item, dict) and "alert_id" in item
             }
+            history_ids = {
+                str(item["alert_id"])
+                for item in payload["history"]
+                if isinstance(item, dict) and isinstance(item.get("alert_id"), str)
+            }
 
             claimed: list[WatchlistAlert] = []
             for alert in candidates:
-                if alert.alert_id in previously_seen or alert.alert_id in pending_ids:
+                if (
+                    alert.alert_id in previously_seen
+                    or alert.alert_id in pending_ids
+                    or alert.alert_id in history_ids
+                ):
                     continue
                 pending.append(alert.to_dict())
                 pending_ids.add(alert.alert_id)
