@@ -1,6 +1,8 @@
 """Configuration edge cases for Phase 10 watchlist alerts."""
 
 from datetime import datetime
+import importlib
+import os
 
 import pytest
 
@@ -44,3 +46,18 @@ def test_invalid_alert_limits_fail_loudly(tmp_path, kwargs, message):
             AlertStateStore(tmp_path / "alerts.json"),
             **kwargs,
         )
+
+
+@pytest.mark.unit
+def test_empty_phase10_path_env_vars_fall_back_to_defaults(monkeypatch):
+    import tradingagents.default_config as default_config
+
+    monkeypatch.setenv("TRADINGAGENTS_WATCHLIST_PATH", "")
+    monkeypatch.setenv("TRADINGAGENTS_ALERT_STATE_PATH", "")
+    reloaded = importlib.reload(default_config)
+
+    home = os.path.join(os.path.expanduser("~"), ".tradingagents")
+    assert reloaded.DEFAULT_CONFIG["watchlist_path"] == os.path.join(home, "watchlist.json")
+    assert reloaded.DEFAULT_CONFIG["alert_state_path"] == os.path.join(
+        home, "alerts", "kap_alerts.json"
+    )
