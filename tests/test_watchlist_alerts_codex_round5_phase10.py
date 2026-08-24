@@ -89,7 +89,7 @@ def test_penalty_inflections_still_match_legal_event():
 
 
 @pytest.mark.unit
-def test_pay_alim_satım_disclosures_match_ownership_event():
+def test_pay_alim_satim_disclosures_match_ownership_event():
     assert classify_kap_disclosure(_disclosure("Pay Alım Satım Bildirimi")) == (
         "ownership",
         80,
