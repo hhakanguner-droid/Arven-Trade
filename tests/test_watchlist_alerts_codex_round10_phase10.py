@@ -31,10 +31,22 @@ def _disclosure(subject: str, *, summary: str = "") -> KapDisclosure:
         "Şirket X'i Satın Alacak",
         "Şirket X'i Satın Alıyor",
         "Şirket X'in Satın Alındığına İlişkin Açıklama",
+        "Şirket X'i Devraldı",
+        "Şirketler Birleşti",
+        "Şirket Bölündü",
     ],
 )
-def test_active_acquisition_inflections_match_mna(subject):
+def test_active_mna_inflections_match_mna(subject):
     assert classify_kap_disclosure(_disclosure(subject)) == ("mna", 90, "high")
+
+
+@pytest.mark.unit
+def test_birlesik_place_name_is_not_misclassified_as_merger():
+    assert classify_kap_disclosure(_disclosure("Birleşik Arap Emirlikleri Faaliyetleri")) == (
+        "other",
+        0,
+        "low",
+    )
 
 
 @pytest.mark.unit
@@ -59,6 +71,11 @@ def test_generic_governance_devir_is_not_mna():
         65,
         "low",
     )
+    assert classify_kap_disclosure(_disclosure("Şirket Yönetim Yetki Devri")) == (
+        "governance",
+        65,
+        "low",
+    )
     assert classify_kap_disclosure(_disclosure("Görev Devri")) == ("other", 0, "low")
 
 
@@ -71,7 +88,18 @@ def test_generic_governance_devir_is_not_mna():
         "Şirket Varlık Devri",
         "İşletme Devri",
         "İştirak Paylarının Devri",
+        "Paylar Devredildi",
+        "Şirketin Devredilmesi",
     ],
 )
 def test_contextual_devir_still_matches_mna(subject):
     assert classify_kap_disclosure(_disclosure(subject)) == ("mna", 90, "high")
+
+
+@pytest.mark.unit
+def test_operational_devreye_word_is_not_treated_as_devir():
+    assert classify_kap_disclosure(_disclosure("Yeni Tesis Devreye Alındı")) == (
+        "operations",
+        80,
+        "medium",
+    )
