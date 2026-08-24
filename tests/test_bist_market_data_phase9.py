@@ -21,8 +21,10 @@ from tradingagents.dataflows.bist import (
     BIST_BENCHMARK,
     BIST_CURRENCY,
     BIST_EXCHANGE_NAME,
+    build_bist_market_context,
     is_bist_yahoo_symbol,
     normalize_bist_yahoo_symbol,
+    resolve_bist_benchmark,
 )
 from tradingagents.dataflows.errors import NoMarketDataError
 from tradingagents.dataflows.kap.service import normalize_bist_ticker_for_kap
@@ -107,6 +109,31 @@ def test_bist_benchmark_is_xu100(ticker):
 
 
 @pytest.mark.unit
+def test_bist_context_uses_explicit_benchmark_override():
+    config = {
+        "benchmark_ticker": "^CUSTOM",
+        "benchmark_map": {".IS": "^XU100", "": "SPY"},
+    }
+    assert resolve_bist_benchmark("THYAO.IS", config) == "^CUSTOM"
+    with patch("tradingagents.dataflows.config.get_config", return_value=config):
+        context = build_bist_market_context("THYAO.IS")
+    assert "Benchmark: ^CUSTOM" in context
+    assert "Benchmark: ^XU100" not in context
+
+
+@pytest.mark.unit
+def test_bist_context_uses_custom_is_benchmark_map_entry():
+    config = {
+        "benchmark_ticker": None,
+        "benchmark_map": {".IS": "XU030.IS", "": "SPY"},
+    }
+    assert resolve_bist_benchmark("ASELS.IS", config) == "XU030.IS"
+    with patch("tradingagents.dataflows.config.get_config", return_value=config):
+        context = build_bist_market_context("ASELS.IS")
+    assert "Benchmark: XU030.IS" in context
+
+
+@pytest.mark.unit
 def test_market_data_call_preserves_is_suffix(monkeypatch):
     seen_symbols: list[str] = []
 
@@ -165,6 +192,33 @@ def test_historical_bist_statement_is_blocked_when_filing_time_is_not_verifiable
     route.assert_not_called()
     assert result.startswith("POINT_IN_TIME_DATA_UNAVAILABLE")
     assert "KAP disclosures" in result
+
+
+@pytest.mark.unit
+def test_missing_bist_statement_date_fails_closed_before_vendor_call():
+    with patch(
+        "tradingagents.agents.utils.fundamental_data_tools.route_to_vendor"
+    ) as route:
+        result = get_balance_sheet.invoke(
+            {"ticker": "THYAO.IS", "freq": "quarterly"}
+        )
+    route.assert_not_called()
+    assert result.startswith("ANALYSIS_DATE_REQUIRED")
+    assert "vendor was not called" in result.lower()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad_date", ["", "2026-08-20T10:00:00", "20-08-2026", "not-a-date"])
+def test_malformed_bist_analysis_date_returns_sentinel_not_exception(bad_date):
+    with patch(
+        "tradingagents.agents.utils.fundamental_data_tools.route_to_vendor"
+    ) as route:
+        result = get_fundamentals.invoke(
+            {"ticker": "ASELS.IS", "curr_date": bad_date}
+        )
+    route.assert_not_called()
+    assert result.startswith("INVALID_ANALYSIS_DATE")
+    assert "Do not estimate or fabricate values" in result
 
 
 @pytest.mark.unit
