@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -143,6 +143,26 @@ def test_alert_service_emits_only_new_important_events_and_deduplicates(tmp_path
     assert len(state.history()) == 1
     assert len(fake.calls) == 2
     assert fake.calls[0]["include_attachments"] is False
+    assert callable(fake.calls[0]["significance_key"])
+
+
+@pytest.mark.unit
+def test_alert_service_uses_borsa_istanbul_calendar_for_aware_utc_time(tmp_path):
+    disclosure = _disclosure(151, "Temettü Ödemesi")
+    fake = FakeKapService({"THYAO.IS": _ok_result("THYAO.IS", (disclosure,))})
+    service = KapWatchlistAlertService(
+        WatchlistStore(tmp_path / "watchlist.json", ["THYAO.IS"]),
+        AlertStateStore(tmp_path / "alerts.json"),
+        kap_service=fake,
+    )
+
+    batch = service.check_watchlist(
+        now=datetime(2026, 8, 23, 21, 30, tzinfo=timezone.utc)
+    )
+
+    assert batch.checked_at.date().isoformat() == "2026-08-24"
+    assert str(batch.checked_at.tzinfo) == "Europe/Istanbul"
+    assert fake.calls[0]["end_date"].isoformat() == "2026-08-24"
 
 
 @pytest.mark.unit
@@ -165,6 +185,26 @@ def test_alert_dedup_survives_service_restart(tmp_path):
         kap_service=FakeKapService({"ASELS.IS": result}),
     )
     assert restarted.check_watchlist(now=datetime(2026, 8, 24, 10, 5)).alerts == ()
+
+
+@pytest.mark.unit
+def test_seen_capacity_must_cover_one_full_poll_across_watchlist(tmp_path):
+    fake = FakeKapService(
+        {
+            "THYAO.IS": _ok_result("THYAO.IS", ()),
+            "ASELS.IS": _ok_result("ASELS.IS", ()),
+        }
+    )
+    service = KapWatchlistAlertService(
+        WatchlistStore(tmp_path / "watchlist.json", ["THYAO.IS", "ASELS.IS"]),
+        AlertStateStore(tmp_path / "alerts.json", seen_limit=150),
+        kap_service=fake,
+        max_disclosures_per_ticker=100,
+    )
+
+    with pytest.raises(ValueError, match="alert_seen_limit"):
+        service.check_watchlist(now=datetime(2026, 8, 24, 11, 0))
+    assert fake.calls == []
 
 
 @pytest.mark.unit
@@ -221,7 +261,7 @@ def test_factory_uses_phase10_config_paths_and_limits(tmp_path):
         "alert_state_path": str(tmp_path / "alerts.json"),
         "default_tickers": ["THYAO.IS"],
         "alert_history_limit": 12,
-        "alert_seen_limit": 34,
+        "alert_seen_limit": 100,
         "kap_timeout_seconds": 1.5,
         "kap_alert_lookback_days": 9,
         "kap_alert_min_score": 85,
@@ -231,7 +271,7 @@ def test_factory_uses_phase10_config_paths_and_limits(tmp_path):
     service = create_watchlist_alert_service(config)
     assert service.watchlist.list() == ("THYAO.IS",)
     assert service.state.history_limit == 12
-    assert service.state.seen_limit == 34
+    assert service.state.seen_limit == 100
     assert service.lookback_days == 9
     assert service.min_score == 85
     assert service.max_disclosures_per_ticker == 50
