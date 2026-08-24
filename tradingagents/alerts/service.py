@@ -38,7 +38,11 @@ _EVENT_RULES: tuple[tuple[AlertCategory, int, tuple[str, ...]], ...] = (
     ("commercial", 85, ("ihale", "sözleşme", "iş ilişkisi", "sipariş")),
     ("legal", 85, ("dava", "ceza", "soruşturma", "yaptırım", "faaliyet durdur")),
     ("operations", 80, ("yatırım", "kapasite", "üretim", "fabrika", "tesis")),
-    ("ownership", 80, ("pay satışı", "pay alımı", "ortaklık", "hakim ortak")),
+    (
+        "ownership",
+        80,
+        ("pay satışı", "pay alımı", "pay alım satım", "ortaklık", "hakim ortak"),
+    ),
     ("financing", 75, ("borçlanma", "finansman", "kredi", "tahvil", "bono")),
     ("governance", 65, ("yönetim", "genel müdür", "yönetici", "bağımsız üye")),
 )
@@ -59,12 +63,44 @@ def _normalize_event_text(value: str) -> str:
 
 
 def _event_term_matches(text: str, term: str) -> bool:
-    """Match alert terms without treating investor communications as investments."""
+    """Match alert terms while avoiding known Turkish substring false positives."""
     normalized = _normalize_event_text(term)
     if normalized == "yatirim":
         # Keep Turkish inflections such as "yatırımı"/"yatırımlar" while
         # excluding the distinct investor stem "yatırımcı...".
         return re.search(r"(?<!\w)yatirim(?!ci)", text) is not None
+    if normalized == "ceza":
+        # Match the legal noun and common inflections, but not the country name
+        # "Cezayir" which otherwise contains the raw substring "ceza".
+        accepted_tokens = {
+            "ceza",
+            "cezai",
+            "cezasi",
+            "cezasina",
+            "cezasini",
+            "cezasinda",
+            "cezasindan",
+            "cezasinin",
+            "cezanin",
+            "cezaya",
+            "cezayi",
+            "cezada",
+            "cezadan",
+            "cezalar",
+            "cezalari",
+            "cezalarina",
+            "cezalarini",
+            "cezalarinda",
+            "cezalarindan",
+            "cezalarin",
+        }
+        return any(
+            token in accepted_tokens or token.startswith("cezalandir")
+            for token in re.findall(r"\w+", text)
+        )
+    if normalized == "pay alim satim":
+        # KAP commonly uses both spaced and hyphenated forms.
+        return re.search(r"(?<!\w)pay\s+alim(?:\s*-\s*|\s+)satim(?!\w)", text) is not None
     return normalized in text
 
 
