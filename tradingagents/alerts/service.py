@@ -11,10 +11,12 @@ from __future__ import annotations
 import json
 import os
 import unicodedata
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from tradingagents.dataflows.bist import is_bist_yahoo_symbol, normalize_bist_yahoo_symbol
 from tradingagents.dataflows.kap.models import KapDisclosure
@@ -36,6 +38,7 @@ _EVENT_RULES: tuple[tuple[AlertCategory, int, tuple[str, ...]], ...] = (
 )
 
 _SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+_ISTANBUL_TZ = ZoneInfo("Europe/Istanbul")
 
 
 def _normalize_event_text(value: str) -> str:
@@ -48,13 +51,17 @@ def _normalize_event_text(value: str) -> str:
     )
 
 
-def classify_kap_disclosure(disclosure: KapDisclosure) -> tuple[AlertCategory, int, AlertSeverity]:
-    """Classify one KAP disclosure into a deterministic alert category/severity."""
-    text = _normalize_event_text(f"{disclosure.subject} {disclosure.summary}")
+def _classify_event_fields(
+    subject: str,
+    summary: str,
+    disclosure_type: str,
+    is_corrective: bool,
+) -> tuple[AlertCategory, int, AlertSeverity]:
+    text = _normalize_event_text(f"{subject} {summary}")
     category: AlertCategory = "other"
     score = 0
 
-    if disclosure.disclosure_type.upper() in {"FR", "FS"}:
+    if disclosure_type.upper() in {"FR", "FS"}:
         category, score = "financials", 100
 
     for candidate, weight, terms in _EVENT_RULES:
@@ -63,7 +70,7 @@ def classify_kap_disclosure(disclosure: KapDisclosure) -> tuple[AlertCategory, i
         if any(_normalize_event_text(term) in text for term in terms):
             category, score = candidate, weight
 
-    if disclosure.is_corrective and score:
+    if is_corrective and score:
         score = min(100, score + 5)
 
     if score >= 95:
@@ -75,6 +82,39 @@ def classify_kap_disclosure(disclosure: KapDisclosure) -> tuple[AlertCategory, i
     else:
         severity = "low"
     return category, score, severity
+
+
+def classify_kap_disclosure(disclosure: KapDisclosure) -> tuple[AlertCategory, int, AlertSeverity]:
+    """Classify one KAP disclosure into a deterministic alert category/severity."""
+    return _classify_event_fields(
+        disclosure.subject,
+        disclosure.summary,
+        disclosure.disclosure_type,
+        disclosure.is_corrective,
+    )
+
+
+def _alert_significance_key(disclosure: object) -> tuple[int, datetime]:
+    """Rank raw kap-client disclosures with the same rules used by alerts."""
+    _, score, _ = _classify_event_fields(
+        str(getattr(disclosure, "subject", "")),
+        str(getattr(disclosure, "summary", "")),
+        str(getattr(disclosure, "disclosure_type", "")),
+        bool(getattr(disclosure, "is_corrective", False)),
+    )
+    published_at = getattr(disclosure, "publish_datetime", None)
+    if not isinstance(published_at, datetime):
+        published_at = datetime.min
+    return score, published_at
+
+
+def _market_datetime(value: datetime | None) -> datetime:
+    """Return a datetime anchored to the Borsa Istanbul calendar."""
+    if value is None:
+        return datetime.now(_ISTANBUL_TZ)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=_ISTANBUL_TZ)
+    return value.astimezone(_ISTANBUL_TZ)
 
 
 def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
@@ -94,6 +134,35 @@ def _read_json_object(path: Path) -> dict[str, Any] | None:
     if not isinstance(payload, dict):
         raise ValueError(f"state file must contain a JSON object: {path}")
     return payload
+
+
+@contextmanager
+def _exclusive_file_lock(path: Path) -> Iterator[None]:
+    """Acquire a blocking inter-process lock using only the standard library."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as handle:
+        if os.name == "nt":  # pragma: no cover - Windows-only branch
+            import msvcrt
+
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 class WatchlistStore:
@@ -169,6 +238,13 @@ class AlertStateStore:
         self.path = Path(path).expanduser()
         self.history_limit = int(history_limit)
         self.seen_limit = int(seen_limit)
+        self.lock_path = self.path.with_name(f"{self.path.name}.lock")
+
+    @contextmanager
+    def locked(self) -> Iterator[None]:
+        """Serialize the read/check/claim cycle across workers."""
+        with _exclusive_file_lock(self.lock_path):
+            yield
 
     def seen_ids(self) -> tuple[str, ...]:
         payload = self._load()
@@ -247,7 +323,7 @@ class KapWatchlistAlertService:
         *,
         now: datetime | None = None,
     ) -> WatchlistAlertBatch:
-        checked_at = now or datetime.now()
+        checked_at = _market_datetime(now)
         if not self.enabled:
             return WatchlistAlertBatch(
                 checked_at=checked_at,
@@ -265,64 +341,73 @@ class KapWatchlistAlertService:
         start = end - timedelta(days=self.lookback_days)
         requested = self.watchlist.list() if tickers is None else tuple(tickers)
         canonical_tickers = WatchlistStore._validated_unique(requested, strict=True)
-        already_seen = set(self.state.seen_ids())
-
-        new_alerts: list[WatchlistAlert] = []
-        observed_ids: list[str] = []
-        statuses: list[AlertSourceStatus] = []
-
-        for ticker in canonical_tickers:
-            result = self.kap_service.get_disclosures(
-                ticker=ticker,
-                start_date=start,
-                end_date=end,
-                max_disclosures=self.max_disclosures_per_ticker,
-                include_attachments=False,
+        required_seen_capacity = len(canonical_tickers) * self.max_disclosures_per_ticker
+        if self.state.seen_limit < required_seen_capacity:
+            raise ValueError(
+                "alert_seen_limit must be at least watchlist_size * "
+                "kap_alert_max_disclosures to prevent duplicate alerts"
             )
-            statuses.append(
-                AlertSourceStatus(
+
+        with self.state.locked():
+            already_seen = set(self.state.seen_ids())
+            new_alerts: list[WatchlistAlert] = []
+            observed_ids: list[str] = []
+            statuses: list[AlertSourceStatus] = []
+
+            for ticker in canonical_tickers:
+                result = self.kap_service.get_disclosures(
                     ticker=ticker,
-                    source="KAP",
-                    status=result.status,
-                    message=result.message,
+                    start_date=start,
+                    end_date=end,
+                    max_disclosures=self.max_disclosures_per_ticker,
+                    include_attachments=False,
+                    significance_key=_alert_significance_key,
                 )
-            )
-            if not result.available:
-                continue
-
-            for disclosure in result.disclosures:
-                alert_id = f"KAP:{ticker}:{disclosure.disclosure_id}"
-                observed_ids.append(alert_id)
-                category, score, severity = classify_kap_disclosure(disclosure)
-                if score < self.min_score or alert_id in already_seen:
-                    continue
-                new_alerts.append(
-                    WatchlistAlert(
-                        alert_id=alert_id,
-                        source="KAP",
+                statuses.append(
+                    AlertSourceStatus(
                         ticker=ticker,
-                        published_at=disclosure.published_at,
-                        title=disclosure.subject,
-                        summary=disclosure.summary,
-                        url=disclosure.url,
-                        category=category,
-                        severity=severity,
-                        score=score,
-                        disclosure_id=disclosure.disclosure_id,
-                        is_corrective=disclosure.is_corrective,
-                        has_attachment=disclosure.has_attachment,
+                        source="KAP",
+                        status=result.status,
+                        message=result.message,
                     )
                 )
+                if not result.available:
+                    continue
 
-        new_alerts.sort(
-            key=lambda item: (
-                _SEVERITY_RANK[item.severity],
-                item.score,
-                item.published_at.isoformat(),
-            ),
-            reverse=True,
-        )
-        self.state.record(observed_ids, new_alerts)
+                for disclosure in result.disclosures:
+                    alert_id = f"KAP:{ticker}:{disclosure.disclosure_id}"
+                    observed_ids.append(alert_id)
+                    category, score, severity = classify_kap_disclosure(disclosure)
+                    if score < self.min_score or alert_id in already_seen:
+                        continue
+                    new_alerts.append(
+                        WatchlistAlert(
+                            alert_id=alert_id,
+                            source="KAP",
+                            ticker=ticker,
+                            published_at=disclosure.published_at,
+                            title=disclosure.subject,
+                            summary=disclosure.summary,
+                            url=disclosure.url,
+                            category=category,
+                            severity=severity,
+                            score=score,
+                            disclosure_id=disclosure.disclosure_id,
+                            is_corrective=disclosure.is_corrective,
+                            has_attachment=disclosure.has_attachment,
+                        )
+                    )
+
+            new_alerts.sort(
+                key=lambda item: (
+                    _SEVERITY_RANK[item.severity],
+                    item.score,
+                    item.published_at.isoformat(),
+                ),
+                reverse=True,
+            )
+            self.state.record(observed_ids, new_alerts)
+
         return WatchlistAlertBatch(
             checked_at=checked_at,
             alerts=tuple(new_alerts),
