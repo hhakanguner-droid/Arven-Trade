@@ -1,7 +1,7 @@
 """Stable Round 17 compatibility entry point.
 
 The original Round 17 implementation is preserved in
-``round17_hardening_base``.  This lightweight wrapper gives Round 17 a reload
+``round17_hardening_base``. This lightweight wrapper gives Round 17 a reload
 identity and, when newer Phase 10 layers are already active, routes direct
 installer calls through the stable Phase 10 orchestrator so an older round can
 never become the outermost layer after a hot reload.
@@ -11,11 +11,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from .round17_hardening_base import install as _install_base
-
-
 _HARDENING_VERSION = "phase10-round17"
 INSTALL_GENERATION = object()
+
+
+def _current_base_install():
+    from . import round17_hardening_base
+
+    return round17_hardening_base.install
 
 
 def _retag(service: Any) -> None:
@@ -35,12 +38,17 @@ def _retag(service: Any) -> None:
 
 def _newer_chain_active(service: Any) -> bool:
     chain = getattr(service, "_PHASE10_HARDENING_CHAIN_INSTALLED", None)
-    if chain in {"phase10-round18", "phase10-round19"}:
+    if chain in {
+        "phase10-round18",
+        "phase10-round19",
+        "phase10-round20",
+        "phase10-round21",
+    }:
         return True
     current = getattr(service, "_satin_alma_is_acquisition", None)
-    return (
-        getattr(current, "_phase10_round18_generation", None) is not None
-        or getattr(current, "_phase10_round19_generation", None) is not None
+    return any(
+        getattr(current, f"_phase10_round{round_no}_generation", None) is not None
+        for round_no in (18, 19, 20, 21)
     )
 
 
@@ -55,6 +63,6 @@ def install(service: Any) -> None:
         phase10_hardening.install(service)
         return
 
-    _install_base(service)
+    _current_base_install()(service)
     _retag(service)
     service._PHASE10_ROUND17_HARDENING_INSTALLED = _HARDENING_VERSION
