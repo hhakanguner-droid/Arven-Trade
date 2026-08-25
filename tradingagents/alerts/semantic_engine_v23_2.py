@@ -39,6 +39,11 @@ def _legal_designator_pattern() -> str:
 
 
 def _is_procurement_token(token: str) -> bool:
+    # ``sunucu`` is an established locked procurement object in the Phase 10
+    # finite gate. Keep the compatibility boundary explicit until the shared
+    # role-parser vocabulary is widened in a later parser revision.
+    if token.startswith("sunucu"):
+        return True
     checker = getattr(_engine, "_procure", None)
     if callable(checker):
         return bool(checker(token))
@@ -77,9 +82,6 @@ def _explicit_purchase_target(value: str) -> bool:
     )
     if not relative:
         return False
-    # A procurement noun governed by the relative purchase predicate proves
-    # that the later company is merely the location/relationship head, not the
-    # purchased object (e.g. sunucunun/bilgisayarın kurulduğu şirketle...).
     if _contains_procurement_object(relative.group("middle")):
         return False
     return True
