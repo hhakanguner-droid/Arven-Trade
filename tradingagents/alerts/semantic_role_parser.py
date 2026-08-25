@@ -61,6 +61,10 @@ _TURNOVER_FILLER = ("islem", "toplam", "ortalama", "gunluk", "aylik", "yillik")
 _ALLOWED_SALE_MODIFIERS = ("tamam", "planlan", "tum", "kismi", "belirli", "dogrudan", "dolayli", "yaklasik")
 _COORD = {"ve", "ancak", "fakat", "ayrica", "sonra", "ardindan"}
 _CORPORATE_HEADS = ("holding", "grup")
+_PASSIVE_NAME_ADJUNCTS = {
+    "dun", "bugun", "tamamen", "kismen", "resmen", "fiilen", "dogrudan", "dolayli",
+    "nihai", "olarak", "yeniden", "once", "sonra",
+}
 _ARTICLES_RE = re.compile(r"(?<!\w)(?:esas|ana)\s+sozlesme\w*")
 
 
@@ -110,7 +114,9 @@ def _procure(token: str) -> bool:
 
 
 def _gov(token: str) -> bool:
-    if token.startswith(("kurulum", "kuruldu", "kurulacak", "kuruluyor", "kurulmas", "kurulm")):
+    if token.startswith((
+        "kurulum", "kurulus", "kuruldu", "kurulacak", "kuruluyor", "kurulmas", "kurulm",
+    )):
         return False
     return _starts(token, _GOV)
 
@@ -131,7 +137,13 @@ def _object_case(token: str) -> bool:
 def _dative_company(token: str) -> bool:
     if not _company(token):
         return False
-    return token.endswith(("ine", "ina", "ne", "na"))
+    if token.startswith("sirket") and token.endswith(("e", "ine", "ina", "ne", "na")):
+        return True
+    if token.startswith("firma") and token.endswith(("ya", "ye", "ina", "ine", "na", "ne")):
+        return True
+    if token.startswith(("ortaklig", "isletme", "istirak")) and token.endswith(("a", "e", "ya", "ye", "ina", "ine", "na", "ne")):
+        return True
+    return False
 
 
 def _company_object_target(token: str) -> bool:
@@ -184,6 +196,17 @@ def _legal_name_tail(items: list[str]) -> bool:
     return len(items) >= 2 and items[-2:] == ["ltd", "sti"]
 
 
+def _legal_name_before_predicate(items: list[str]) -> bool:
+    if _legal_name_tail(items):
+        return True
+    for i in range(len(items) - 1, -1, -1):
+        if items[i] == "as":
+            return all(x in _PASSIVE_NAME_ADJUNCTS for x in items[i + 1:])
+        if i >= 1 and items[i - 1:i + 1] == ["ltd", "sti"]:
+            return all(x in _PASSIVE_NAME_ADJUNCTS for x in items[i + 1:])
+    return False
+
+
 def _genitive_buyer_phrase(items: list[str]) -> bool:
     if any(_genitive_company(t) for t in items):
         return True
@@ -227,14 +250,17 @@ def _finite(token: str) -> bool:
     if re.search(
         r"(?:di|du|ti|tu|dim|dum|tim|tum|din|dun|tin|tun|dik|duk|tik|tuk|"
         r"diniz|dunuz|tiniz|tunuz|dilar|diler|dular|duler|tilar|tiler|tular|tuler|"
-        r"yor|yoruz|yorsunuz|mistir|mustur|mektedir|maktadir|acak|ecek|acaktir|ecektir|ilecektir|ilacaktir)$",
+        r"yor|yoruz|yorsunuz|yorlar|"
+        r"mis|mus|misler|muslar|mistir|mustur|"
+        r"mektedir|maktadir|"
+        r"acak|ecek|acaklar|ecekler|acaktir|ecektir|ilecektir|ilacaktir)$",
         token,
     ):
         return True
     if token.startswith((
         "yuksel", "dus", "acikla", "kullan", "sagla", "sonuclandir", "birles", "bolun",
         "devret", "devred", "satil", "kiralan", "feshed", "imzalan", "tamamlan", "artir",
-        "azal", "yayinlan", "duyurul", "yenilen", "insa", "katil", "gorus",
+        "azal", "yayinlan", "duyurul", "yenilen", "insa", "katil", "gorus", "gel",
     )) and not _relative(token):
         return True
     return False
@@ -273,6 +299,14 @@ def _blocked_agent_indices(items: list[str]) -> set[int]:
         head = marker_index - 1
         if _company(items[head]) or _transfer(items[head]):
             out.add(head)
+        for j in range(marker_index - 2, max(-1, marker_index - 7), -1):
+            t = items[j]
+            if _company_object_target(t) and not _genitive_company(t):
+                break
+            if _procure(t):
+                break
+            if _company(t) or _transfer(t) or _genitive_company(t):
+                out.add(j)
     return out
 
 
@@ -322,9 +356,11 @@ def _nearest_role_before(items: list[str], index: int) -> tuple[str, str] | None
     return None
 
 
-def _nearest_role_after(items: list[str], index: int) -> tuple[str, str] | None:
+def _nearest_role_after(items: list[str], index: int, *, stop_at_finite: bool = False) -> tuple[str, str] | None:
     blocked = _blocked(items)
     for i in range(index, len(items)):
+        if stop_at_finite and i > index and _finite(items[i]):
+            break
         if i in blocked:
             continue
         tok = items[i]
@@ -332,6 +368,8 @@ def _nearest_role_after(items: list[str], index: int) -> tuple[str, str] | None:
             return "unit", tok
         if _procure(tok):
             for j in range(i + 1, min(len(items), i + 7)):
+                if stop_at_finite and _finite(items[j]):
+                    break
                 if j in blocked:
                     continue
                 if _company(items[j]) and not _speaker(items[j]) and not _locative_company(items[j]) and not _dative_company(items[j]):
@@ -382,7 +420,7 @@ def _purchase_decision(text: str) -> str:
             )
 
             if kind == "passive":
-                if _legal_name_tail(before):
+                if _legal_name_before_predicate(before):
                     return "mna"
                 role = _nearest_role_before(items, i)
                 if role and role[0] == "transfer":
@@ -390,7 +428,7 @@ def _purchase_decision(text: str) -> str:
                 if role and role[0] in {"procure", "operational"}:
                     saw_procurement = True
                     continue
-                post = _nearest_role_after(items, i + 2)
+                post = _nearest_role_after(items, i + 2, stop_at_finite=True)
                 if post and post[0] == "transfer":
                     return "mna"
                 if post and post[0] in {"procure", "operational"}:
@@ -413,7 +451,7 @@ def _purchase_decision(text: str) -> str:
             if kind == "active_finite":
                 if explicit_before:
                     return "mna"
-                post = _nearest_role_after(items, i + 2)
+                post = _nearest_role_after(items, i + 2, stop_at_finite=True)
                 if post and post[0] == "transfer":
                     return "mna"
                 continue
@@ -435,7 +473,7 @@ def _purchase_decision(text: str) -> str:
                 if compact_heading:
                     return "mna"
                 pre_role = _nearest_role_before(items, i)
-                post_role = _nearest_role_after(items, i + 2)
+                post_role = _nearest_role_after(items, i + 2, stop_at_finite=True)
                 if pre_role and pre_role[0] == "procure":
                     saw_procurement = True
                     continue
@@ -471,6 +509,7 @@ def _devralma_decision(text: str) -> str:
                 return "mna"
             if gov_obj:
                 continue
+
             if tok.startswith("devralin"):
                 role = _nearest_role_before(items, i)
                 if role and role[0] == "transfer":
@@ -478,20 +517,34 @@ def _devralma_decision(text: str) -> str:
                 if role and role[0] in {"procure", "operational"}:
                     saw_procurement = True
                     continue
-                role2 = _nearest_role_after(items, i + 1)
+                role2 = _nearest_role_after(items, i + 1, stop_at_finite=True)
                 if role2 and role2[0] == "transfer":
                     return "mna"
                 if role2 and role2[0] in {"procure", "operational"}:
                     saw_procurement = True
                 continue
+
             if tok.startswith("devralma"):
                 role = _nearest_role_before(items, i)
                 if role and role[0] == "transfer":
                     return "mna"
-                role2 = _nearest_role_after(items, i + 1)
+                role2 = _nearest_role_after(items, i + 1, stop_at_finite=True)
                 if role2 and role2[0] == "transfer":
                     return "mna"
                 continue
+
+            if tok.endswith(("irken", "arken", "erken")):
+                continue
+
+            for j in range(i + 1, len(items)):
+                if _finite(items[j]):
+                    break
+                if j in blocked:
+                    continue
+                t = items[j]
+                if ((_transfer(t) and not _company(t) and _object_case(t)) or _company_object_target(t)) \
+                        and not _speaker(t) and not _genitive_company(t) and not _dative_company(t):
+                    return "mna"
     return "procurement" if saw_procurement else "none"
 
 
@@ -503,7 +556,7 @@ def _physical_tesis_predicate(items: list[str], idx: int) -> bool:
     if idx > 0 and _starts(items[idx - 1], _PHYSICAL_HEAD):
         return True
     tail = items[idx + 1:idx + 7]
-    return any(t.startswith(("kurul", "insa", "kiraya", "faaliy", "devreye", "acil", "genislet", "kapasite")) for t in tail)
+    return any(t.startswith(("kurul", "kurulus", "insa", "kiraya", "faaliy", "devreye", "acil", "genislet", "kapasite")) for t in tail)
 
 
 def _legal_tesis(items: list[str], idx: int) -> bool:
@@ -596,6 +649,15 @@ def _merger_match(subject: str, summary: str) -> bool:
     return False
 
 
+def _bound_corporate_head(items: list[str], predicate_index: int) -> bool:
+    allowed = ("iki", "ikiye", "ayri", "kismi", "tam", "olarak")
+    for j in range(predicate_index - 1, -1, -1):
+        if items[j].startswith(_CORPORATE_HEADS):
+            between = items[j + 1:predicate_index]
+            return all(x.startswith(allowed) for x in between)
+    return False
+
+
 def _split_match(subject: str, summary: str) -> bool:
     subj = tokens(subject)
     if subj:
@@ -616,11 +678,11 @@ def _split_match(subject: str, summary: str) -> bool:
             pos_oper = max([j for j in range(i) if items[j].startswith(_OPERATIONAL)] or [-1])
             pos_company = max([
                 j for j in range(i)
-                if _company(items[j]) or items[j].startswith(("pay", "hisse", "sermaye") + _CORPORATE_HEADS)
+                if _company(items[j]) or items[j].startswith(("pay", "hisse", "sermaye"))
             ] or [-1])
             if pos_oper > pos_company:
                 continue
-            if pos_company >= 0 or any(_company(x) or x.startswith(_CORPORATE_HEADS) for x in items[i + 1:]):
+            if pos_company >= 0 or _bound_corporate_head(items, i) or any(_company(x) for x in items[i + 1:]):
                 return True
     return False
 
@@ -714,7 +776,7 @@ def _contract_segments(value: str) -> list[str]:
 
 def _articles_reference(seg: str) -> bool:
     return bool(re.search(
-        r"\bsozlesme\w*\s+\d+(?:\W*(?:nci|inci|uncu|numarali))?\s+madde\w*",
+        r"\bsozlesme\w*\s+\d+(?:\W*(?:nci|inci|uncu|numarali|sayili))?\s+madde\w*",
         seg,
     ))
 
