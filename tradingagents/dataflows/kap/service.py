@@ -105,28 +105,39 @@ def _select_significant(
     limit: int,
     significance_key: Callable[[object], tuple[int, datetime]] | None = None,
 ) -> list:
-    """Select a bounded mix of newest and most significant disclosures.
+    """Select a bounded mix of fresh actionable and significant disclosures.
 
-    A pure significance-first cap can permanently hide a newer, slightly
-    lower-scoring disclosure behind an older record that remains inside the
-    lookback window. Reserve at least half of the bounded result for the newest
-    records, then fill the remaining slots by significance. This keeps analyst
-    relevance while ensuring fresh disclosure IDs can enter alert dedup state.
+    The bounded set must satisfy two competing Phase 10 requirements:
+    older high-score records must not permanently starve newer actionable IDs,
+    and a newest score-zero record must not consume the only slot while a real
+    alert is present. Therefore the freshness quota is drawn from records with
+    positive significance first. Remaining capacity is filled by significance;
+    only when the whole window is non-actionable do we fall back to pure recency.
     """
     items = list(disclosures)
     if not items:
         return []
 
     key = significance_key or _significance
-    newest = sorted(items, key=lambda item: item.publish_datetime, reverse=True)
-    newest_quota = min(limit, max(1, (limit + 1) // 2))
-    selected = newest[:newest_quota]
+    scored = [(item, key(item)) for item in items]
+    actionable = [pair for pair in scored if pair[1][0] > 0]
+
+    if not actionable:
+        return sorted(items, key=lambda item: item.publish_datetime, reverse=True)[:limit]
+
+    newest_actionable = sorted(
+        actionable,
+        key=lambda pair: pair[0].publish_datetime,
+        reverse=True,
+    )
+    recent_quota = min(limit, max(1, (limit + 1) // 2))
+    selected = [item for item, _ in newest_actionable[:recent_quota]]
     selected_identity = {id(item) for item in selected}
 
     if len(selected) < limit:
-        remaining = [item for item in items if id(item) not in selected_identity]
-        ranked = sorted(remaining, key=key, reverse=True)
-        selected.extend(ranked[: limit - len(selected)])
+        remaining = [pair for pair in scored if id(pair[0]) not in selected_identity]
+        ranked = sorted(remaining, key=lambda pair: pair[1], reverse=True)
+        selected.extend(item for item, _ in ranked[: limit - len(selected)])
 
     return sorted(selected, key=lambda item: item.publish_datetime, reverse=True)
 
@@ -191,8 +202,6 @@ class KapService:
                 try:
                     company_oid = client.find_company(kap_ticker).oid
                 except CompanyNotFoundError:
-                    # KAP changed the listed-company member type/schema in 2026;
-                    # kap-client 1.x can therefore miss valid IGS companies.
                     company_oid = self.company_resolver(kap_ticker)
                     if company_oid is None:
                         raise
