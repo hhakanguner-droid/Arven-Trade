@@ -80,6 +80,7 @@ _NONFINITE_ADJUNCTS = {
     "dun", "bugun", "yarin", "simdi", "halen", "henuz", "tamamen", "kismen", "resmen",
     "fiilen", "dogrudan", "dolayli", "nihai", "olarak", "yeniden", "once", "sonra",
     "gecen", "yil", "ay", "hafta", "hizla", "derhal", "birlikte", "ayrica",
+    "yillar", "aylar", "haftalar", "gunler", "saatler",
 }
 _SPLIT_OBJECT_BLOCKERS = (
     "calisan", "personel", "ortak", "hissedar", "musteri", "ekip", "departman", "birim",
@@ -89,6 +90,13 @@ _SPLIT_OBJECT_BLOCKERS = (
 _REPURCHASE_MODIFIERS = (
     "planlan", "ongorul", "duyurul", "aciklan", "belirlen", "mevcut", "olasi", "yeni",
     "duzenli", "programlan", "ilgili", "yaklasik", "muhtemel", "kapsayacak", "kapsayan",
+    "bir",
+)
+_FINITE_VERB_STEMS = (
+    "al", "sat", "devral", "devret", "devred", "et", "ol", "yap", "kur", "kullan", "sagla",
+    "sonuclandir", "birles", "bolun", "kiralan", "feshed", "imzalan", "tamamlan", "artir",
+    "azal", "yayinlan", "duyurul", "yenilen", "insa", "katil", "gorus", "gel", "konus",
+    "bekle", "yuksel", "dus", "acikla", "gor", "oku", "yaz", "ac", "kapat",
 )
 _ARTICLES_RE = re.compile(r"(?<!\w)(?:esas|ana)\s+sozlesme\w*")
 _UNVOICED = frozenset("fstkchsp")
@@ -132,6 +140,8 @@ def _speaker(token: str) -> bool:
 
 
 def _transfer(token: str) -> bool:
+    if token.startswith("paylas"):
+        return False
     return _starts(token, _TRANSFER)
 
 
@@ -145,6 +155,15 @@ def _gov(token: str) -> bool:
     )):
         return False
     return _starts(token, _GOV)
+
+
+def _org_unit(token: str) -> bool:
+    if token.startswith((
+        "kurulum", "kurulus", "kuruldu", "kurulacak", "kuruluyor", "kurulmus", "kurulu",
+        "kurulmas", "kurulm",
+    )):
+        return False
+    return token.startswith(_ORG_UNITS)
 
 
 def _right(token: str) -> bool:
@@ -182,13 +201,13 @@ def _dative_company(token: str) -> bool:
     if token.startswith("sirket"):
         return token.endswith(("ete", "ine", "e", "lere", "lerine"))
     if token.startswith("firma"):
-        return token.endswith(("maya", "ya", "sina", "ina", "lara", "larina"))
+        return token.endswith(("maya", "ya", "sina", "ina", "lara", "larina", "mama"))
     if token.startswith(("ortaklik", "ortaklig")):
-        return token.endswith(("liga", "ligina", "lara", "larina"))
+        return token.endswith(("liga", "ligina", "lara", "larina", "ima"))
     if token.startswith("isletme"):
-        return token.endswith(("meye", "sine", "lerine", "lere"))
+        return token.endswith(("meye", "sine", "lerine", "lere", "meme"))
     if token.startswith("istirak"):
-        return token.endswith(("e", "ine", "lere", "lerine"))
+        return token.endswith(("e", "ine", "lere", "lerine", "ime"))
     return False
 
 
@@ -224,10 +243,19 @@ def _comitative_company(token: str) -> bool:
 
 
 def _proper_accusative(items: list[str]) -> bool:
-    for i, tok in enumerate(items):
-        if tok in {"i", "yi", "u", "yu", "ni", "nu"} and i > 0 and not _company(items[i - 1]):
-            return True
+    # Kept for compatibility with older local tests; the active parser now
+    # requires raw corporate-name evidence before accepting apostrophe case.
     return False
+
+
+def _raw_corporate_accusative_purchase(value: str) -> bool:
+    """Accept acronym-like proper-name objects, but not branded products such as iPhone/Model X."""
+    pattern = (
+        rb"\b[A-ZCÇĞ¹ÖŞ]Ü]{2,}(?:\s+[A-ZÇĜ¹ÖŜ]Ü]{2,})*['’]"
+        r("(?:yi|yı|u|yü|iı|u|ü|ni|nı|nu|nü)\b^"
+        r"(?=[^.!?;]{0,80}\br’uın\s+sat±n\s+al)"
+    )
+    return bool(re.search(pattern, str(value or ""), flags=re.UNICODE))
 
 
 def _named_legal_genitive(items: list[str]) -> bool:
@@ -258,7 +286,7 @@ def _legal_name_before_predicate(items: list[str]) -> bool:
     for tok in tail:
         if tok.startswith(_AGENT_MARKERS) or tok in _SPLIT_AGENT_HEADS:
             return False
-        if tok.startswith(_ORG_UNITS) or _company(tok) or _transfer(tok) or _procure(tok) or _gov(tok):
+        if _org_unit(tok) or _company(tok) or _transfer(tok) or _procure(tok) or _gov(tok):
             return False
         if _object_case(tok) and not _modifier_like(tok):
             return False
@@ -280,7 +308,7 @@ def _named_company_raw(value: str) -> bool:
     raw = normalize(
         str(value)
         .replace("A.Ş.", " AS ").replace("a.ş.", " AS ")
-        .replace("Ltd. Şti.", " LTD STI ")
+        .replace("Ltd. şti.", " LTD STI ")
     )
     return bool(re.search(r"\b(?:as|ltd\s+sti)\b", raw)) or bool(re.search(r"\ba\s+s\b", raw))
 
@@ -289,7 +317,7 @@ def _relative(token: str) -> bool:
     if re.search(
         r"(?:digi|dugu|tigi|tugu|"
         r"digim|digimiz|diginiz|diklari|dugum|dugumuz|dugunuz|duklari|"
-        r"tigim|tigimiz|tiginiz|tiklari|tugum|tugumuz|tugunuz|tuklari)$",
+        r"tigim|tigimiz|tiginiz|tiklari|tugum|tugumuz|tugunuz|tuklarii$",
         token,
     ):
         return True
@@ -307,16 +335,16 @@ def _past_plural_finite(token: str) -> bool:
     for suffix in ("dilar", "diler", "dular", "duler"):
         if token.endswith(suffix):
             root = token[:-len(suffix)]
-            return bool(root) and root[-1] not in _UNVOICED
+            return bool(root) and root[-1] not in _UNVOICED and root.startswith(_FINITE_VERB_STEMS)
     for suffix in ("tilar", "tiler", "tular", "tuler"):
         if token.endswith(suffix):
             root = token[:-len(suffix)]
-            return bool(root) and root[-1] in _UNVOICED
+            return bool(root) and root[-1] in _UNVOICED and root.startswith(_FINITE_VERB_STEMS)
     return False
 
 
 def _finite(token: str) -> bool:
-    if not token or token in _NONFINITE_ADJUNCTS or _relative(token):
+    if not token or token == "satin" or token in _NONFINITE_ADJUNCTS or _relative(token):
         return False
     if re.search(r"(?:malar|meler|masi|mesi|malarini|melerini)$", token):
         return False
@@ -332,7 +360,7 @@ def _finite(token: str) -> bool:
         r"mektedir|maktadir|"
         r"acak|ecek|acaklar|ecekler|acaktir|ecektir|ilecektir|ilacaktir)$",
         token,
-    ):
+     ):
         return True
     if len(token) >= 5 and re.search(r"(?:ar|er|ir|ur)(?:lar|ler)$", token) and not token.startswith(("karar", "zarar")):
         return True
@@ -351,21 +379,37 @@ def _has_finite(items: list[str]) -> bool:
     return any(_finite(tok) for tok in items)
 
 
+def _split_coordinated(items: list[str]) -> list[list[str]]:
+    out: list[list[str]] = []
+    start = 0
+    for i, tok in enumerate(items):
+        if tok not in _COORD:
+            continue
+        left, right = items[start:i], items[i + 1:]
+        if left and right and _has_finite(left) and _has_finite(right):
+            out.append(left)
+            start = i + 1
+    if items[start�z
+        out.append(items[start�J    return out
+
+
 def _clauses(value: str) -> list[list[str]]:
     out: list[list[str]] = []
     for sent in segments(value):
-        for raw in sent.split(","):
-            items = re.findall(r"\w+", raw)
-            start = 0
-            for i, tok in enumerate(items):
-                if tok not in _COORD:
-                    continue
-                left, right = items[start:i], items[i + 1:]
-                if left and right and _has_finite(left) and _has_finite(right):
-                    out.append(left)
-                    start = i + 1
-            if items[start:]:
-                out.append(items[start:])
+        comma_parts = [re.findall(r"\w+", raw) for raw in sent.split(",")]
+        comma_parts = [part for part in comma_parts if part]
+        merged: list[list[str]] = []
+        current: list[str] = []
+        for part in comma_parts:
+            if current and _has_finite(current) and _has_finite(part):
+                merged.append(current)
+                current = list(part)
+            else:
+                current.extend(part)
+        if current:
+            merged.append(current)
+        for items in merged:
+            out.extend(_split_coordinated(items))
     return out
 
 
@@ -459,7 +503,7 @@ def _nearest_role_after(items: list[str], index: int, *, stop_at_finite: bool = 
         if i in blocked:
             continue
         tok = items[i]
-        if tok.startswith(_ORG_UNITS):
+        if _org_unit(tok):
             return "unit", tok
         if _procure(tok):
             for j in range(i + 1, min(len(items), i + 7)):
@@ -499,6 +543,7 @@ def _purchase_kind(tok: str, after: list[str]) -> str:
 
 def _purchase_decision(text: str) -> str:
     saw_procurement = False
+    raw_proper_target = _raw_corporate_accusative_purchase(text)
     for items in _clauses(text):
         for i in range(len(items) - 1):
             if items[i] != "satin" or not items[i + 1].startswith("al"):
@@ -507,7 +552,7 @@ def _purchase_decision(text: str) -> str:
             before, after = items[:i], items[i + 2:]
             kind = _purchase_kind(tok, after)
             blocked_before = _blocked(before)
-            explicit_before = _proper_accusative(before) or any(
+            explicit_before = raw_proper_target or any(
                 j not in blocked_before
                 and ((_transfer(t) and not _company(t) and _object_case(t)) or _company_object_target(t))
                 and not _speaker(t) and not _genitive_company(t) and not _dative_company(t)
@@ -552,18 +597,18 @@ def _purchase_decision(text: str) -> str:
                 continue
 
             if kind == "active_nominal":
-                if any(t.startswith(_ORG_UNITS) for t in after):
+                if any(_org_unit(t) for t in after):
                     continue
                 if explicit_before:
                     return "mna"
-                if _named_legal_genitive(before) and not any(t.startswith(_ORG_UNITS) for t in after):
+                if _named_legal_genitive(before) and not any(_org_unit(t) for t in after):
                     return "mna"
                 compact_heading = (
                     bool(before) and len(before) <= 4
                     and any(_company(t) or t.startswith(_CORPORATE_HEADS) for t in before)
                     and not any(_procure(t) for t in before)
                     and not _has_finite(after)
-                    and not any(t.startswith(_ORG_UNITS) for t in after)
+                    and not any(_org_unit(t) for t in after)
                 )
                 if compact_heading:
                     return "mna"
@@ -718,17 +763,37 @@ def _capital_match(subject: str, summary: str, term: str) -> bool:
     return False
 
 
+def _merger_subject_is_corporate(items: list[str], predicate_index: int) -> bool:
+    """Bind possessive nominal merger heads to the noun they actually govern."""
+    for j in range(predicate_index - 1, -1, -1):
+        t = items[j]
+        if t in _COORD or t.startswith(_POSTPOSITIONS) or _modifier_like(t):
+            continue
+        if t.startswith(_ORG_UNITS) or _starts(t, _OPERATIONAL) or _procure(t) or _starts(t, _PRODUCT) or _starts(t, _DEBT):
+            return False
+        if _company(t) or t.startswith(("pay", "hisse", "sermaye", "holding", "grup")):
+            return True
+        if t in {"iki", "uc", "dort", "ayri", "tek"} or t.isdigit():
+            continue
+        return False
+    return False
+
+
 def _merger_match(subject: str, summary: str) -> bool:
     for items in _clauses(f"{subject}. {summary}"):
         for i, t in enumerate(items):
             if t.startswith("birlesik") or not t.startswith("birles"):
+                continue
+            if t.startswith(("birlesmesi", "birlesmelerinin", "birlesmeler")):
+                if _merger_subject_is_corporate(items, i):
+                    return True
                 continue
             if t.startswith("birlesme"):
                 if any(_company(x) or x.startswith(("pay", "hisse", "sermaye", "holding", "grup")) for x in items):
                     return True
                 continue
             if t.startswith(("birlestir", "birlestiril")):
-                pos_transfer = max([j for j in range(i) if items[j].startswith(_TRANSFER + _COMPANY)] or [-1])
+                pos_transfer = max([j for j in range(i) if _transfer(items[j]) or _company(items[j])] or [-1])
                 pos_oper = max([j for j in range(i) if items[j].startswith(_OPERATIONAL)] or [-1])
                 if pos_transfer > pos_oper:
                     return True
@@ -746,7 +811,7 @@ def _bound_corporate_head(items: list[str], predicate_index: int) -> bool:
         between = items[j + 1:predicate_index]
         if between and between[0] in {"de", "da", "te", "ta"}:
             return False
-        if any(x.startswith(_SPLIT_OBJECT_BLOCKERS) for x in between):
+        if any(x.startswith(_SPLIT_OBJECT_BLOCKERS)) for x in between):
             return False
         if any(_object_case(x) and not _dative_company(x) and not _modifier_like(x) for x in between):
             return False
@@ -817,7 +882,7 @@ def _devir_match(subject: str, summary: str) -> bool:
             explicit = any(_transfer(x) and _object_case(x) and not _genitive_company(x) and not _dative_company(x) for x in nearby)
             if explicit:
                 return True
-            if any(_gov(x) for x in nearby):
+            if any(_gov(q) for x in nearby):
                 continue
             if any(_company(x) and not _speaker(x) and not _source_company(x) and not _dative_company(x) for x in items[i + 1:]):
                 return True
@@ -899,7 +964,7 @@ def _contract_match(subject: str, summary: str) -> bool:
     articles_subject = bool(_ARTICLES_RE.search(normalize(subject)))
     for value in (subject, summary):
         for seg in _contract_segments(value):
-            if not re.search(r"(?<!\w)sozlesme\w*", seg):
+            if not re.search(r"(?<!\w(isozlesme\w*", seg):
                 continue
             if _ARTICLES_RE.search(seg):
                 continue
@@ -928,7 +993,7 @@ def _ownership_match(subject: str, summary: str) -> bool:
                     mods = items[i + 1:s]
                     if any(_starts(x, _SALE_ASSETS) or _procure(x) for x in mods):
                         break
-                    if mods and not all(x.startswith(_ALLOWED_SALE_MODIFIERS) for x in mods):
+                    if mods and not all(x.startswith(_ALLOWED_SALE_MODIFIERS) or _modifier_like(x) for x in mods):
                         break
                     return True
     return False
