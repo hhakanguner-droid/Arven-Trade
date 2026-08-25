@@ -46,9 +46,12 @@ _RIGHT = (
     "intifa", "irtifak", "ipotek", "rehin", "teminat", "haciz", "kefalet",
 )
 _AGENT_MARKERS = ("tarafindan", "araciligiyla", "vasitasiyla", "kanaliyla", "eliyle")
+_SPLIT_AGENT_HEADS = ("araciligi", "vasitasi", "kanali", "eli")
 _ORG_UNITS = (
-    "departman", "birim", "ekip", "mudurluk", "mudurlugu", "direktorluk", "ofis",
-    "komite", "fonksiyon", "organizasyon", "politika", "prosedur",
+    "departman", "birim", "ekip", "mudurluk", "mudurlugu", "mudur", "muduru",
+    "direktorluk", "direktorlug", "baskanlik", "baskanlig", "daire", "koordinatorluk",
+    "koordinatorlug", "koordinatorlugu", "ofis", "komite", "fonksiyon", "organizasyon",
+    "politika", "prosedur",
 )
 _POSTPOSITIONS = ("icin", "uzere", "ait", "dair", "iliskin", "kapsaminda", "yonelik", "hakkinda")
 _SALE_ASSETS = (
@@ -56,15 +59,28 @@ _SALE_ASSETS = (
     "tesis", "fabrika", "arac", "makine", "ekipman", "stok", "emtia", "enerji", "elektrik",
     "siparis", "proje", "arsa", "bina", "arazi", "tarla", "ofis", "depo",
 )
-_TURNOVER_METRIC = ("hiz", "oran", "sure", "siklik", "adet", "aded", "sayi", "miktar", "ortalama")
+_TURNOVER_METRIC = (
+    "hiz", "oran", "sure", "siklik", "adet", "aded", "sayi", "miktar", "ortalama",
+    "hacim", "hacm", "deger", "tutar",
+)
 _TURNOVER_FILLER = ("islem", "toplam", "ortalama", "gunluk", "aylik", "yillik")
 _ALLOWED_SALE_MODIFIERS = ("tamam", "planlan", "tum", "kismi", "belirli", "dogrudan", "dolayli", "yaklasik")
 _COORD = {"ve", "ancak", "fakat", "ayrica", "sonra", "ardindan"}
 _CORPORATE_HEADS = ("holding", "grup")
-_PASSIVE_NAME_ADJUNCTS = {
-    "dun", "bugun", "tamamen", "kismen", "resmen", "fiilen", "dogrudan", "dolayli",
-    "nihai", "olarak", "yeniden", "once", "sonra",
+_NONFINITE_ADJUNCTS = {
+    "dun", "bugun", "yarin", "simdi", "halen", "henuz", "tamamen", "kismen", "resmen",
+    "fiilen", "dogrudan", "dolayli", "nihai", "olarak", "yeniden", "once", "sonra",
+    "gecen", "yil", "ay", "hafta", "hizla", "derhal", "birlikte", "ayrica",
 }
+_SPLIT_OBJECT_BLOCKERS = (
+    "calisan", "personel", "ekip", "departman", "birim", "mudurluk", "dosya", "veri",
+    "arsiv", "set", "borc", "kredi", "hat", "uretim", "depo", "makine", "ekipman",
+    "urun", "mal", "varlik", "portfoy", "proje",
+)
+_REPURCHASE_MODIFIERS = (
+    "planlan", "ongorul", "duyurul", "aciklan", "belirlen", "mevcut", "olasi", "yeni",
+    "duzenli", "programlan", "ilgili", "yaklasik", "muhtemel",
+)
 _ARTICLES_RE = re.compile(r"(?<!\w)(?:esas|ana)\s+sozlesme\w*")
 
 
@@ -137,12 +153,16 @@ def _object_case(token: str) -> bool:
 def _dative_company(token: str) -> bool:
     if not _company(token):
         return False
-    if token.startswith("sirket") and token.endswith(("e", "ine", "ina", "ne", "na")):
-        return True
-    if token.startswith("firma") and token.endswith(("ya", "ye", "ina", "ine", "na", "ne")):
-        return True
-    if token.startswith(("ortaklig", "isletme", "istirak")) and token.endswith(("a", "e", "ya", "ye", "ina", "ine", "na", "ne")):
-        return True
+    if token.startswith("sirket"):
+        return token.endswith(("ete", "ine", "e", "lere", "lerine"))
+    if token.startswith("firma"):
+        return token.endswith(("maya", "ya", "sina", "ina", "lara", "larina"))
+    if token.startswith(("ortaklik", "ortaklig")):
+        return token.endswith(("liga", "ligina", "lara", "larina"))
+    if token.startswith("isletme"):
+        return token.endswith(("meye", "sine", "lerine", "lere"))
+    if token.startswith("istirak"):
+        return token.endswith(("e", "ine", "lere", "lerine"))
     return False
 
 
@@ -197,14 +217,26 @@ def _legal_name_tail(items: list[str]) -> bool:
 
 
 def _legal_name_before_predicate(items: list[str]) -> bool:
+    """Bind a legal company designator to a passive predicate without enumerating adverbs."""
     if _legal_name_tail(items):
         return True
-    for i in range(len(items) - 1, -1, -1):
-        if items[i] == "as":
-            return all(x in _PASSIVE_NAME_ADJUNCTS for x in items[i + 1:])
-        if i >= 1 and items[i - 1:i + 1] == ["ltd", "sti"]:
-            return all(x in _PASSIVE_NAME_ADJUNCTS for x in items[i + 1:])
-    return False
+    candidate_end = -1
+    for i, tok in enumerate(items):
+        if tok == "as":
+            candidate_end = i
+        elif tok == "sti" and i > 0 and items[i - 1] == "ltd":
+            candidate_end = i
+    if candidate_end < 0:
+        return False
+    tail = items[candidate_end + 1:]
+    for tok in tail:
+        if tok.startswith(_AGENT_MARKERS) or tok in _SPLIT_AGENT_HEADS:
+            return False
+        if tok.startswith(_ORG_UNITS) or _company(tok) or _transfer(tok) or _procure(tok) or _gov(tok):
+            return False
+        if _finite(tok):
+            return False
+    return True
 
 
 def _genitive_buyer_phrase(items: list[str]) -> bool:
@@ -227,7 +259,8 @@ def _named_company_raw(value: str) -> bool:
 
 def _relative(token: str) -> bool:
     if re.search(
-        r"(?:digim|digimiz|diginiz|diklari|dugum|dugumuz|dugunuz|duklari|"
+        r"(?:digi|dugu|tigi|tugu|"
+        r"digim|digimiz|diginiz|diklari|dugum|dugumuz|dugunuz|duklari|"
         r"tigim|tigimiz|tiginiz|tiklari|tugum|tugumuz|tugunuz|tuklari)$",
         token,
     ):
@@ -243,11 +276,11 @@ def _relative(token: str) -> bool:
 
 
 def _finite(token: str) -> bool:
-    if _relative(token):
+    if not token or token in _NONFINITE_ADJUNCTS or _relative(token):
         return False
     if token in {"etti", "edildi", "oldu", "olmustur", "erdi", "bitti", "iflas", "kuruldu", "kurdu", "yapildi"}:
         return True
-    if re.search(
+    if len(token) >= 4 and re.search(
         r"(?:di|du|ti|tu|dim|dum|tim|tum|din|dun|tin|tun|dik|duk|tik|tuk|"
         r"diniz|dunuz|tiniz|tunuz|dilar|diler|dular|duler|tilar|tiler|tular|tuler|"
         r"yor|yoruz|yorsunuz|yorlar|"
@@ -257,10 +290,15 @@ def _finite(token: str) -> bool:
         token,
     ):
         return True
+    if token.endswith(("rlar", "rler")) and token.startswith((
+        "gel", "git", "konus", "gorus", "katil", "yap", "ol", "kal", "acikla", "bildir",
+        "kullan", "sagla", "uret", "sat", "al", "devret", "art", "azal", "yuksel", "dus",
+    )):
+        return True
     if token.startswith((
         "yuksel", "dus", "acikla", "kullan", "sagla", "sonuclandir", "birles", "bolun",
         "devret", "devred", "satil", "kiralan", "feshed", "imzalan", "tamamlan", "artir",
-        "azal", "yayinlan", "duyurul", "yenilen", "insa", "katil", "gorus", "gel",
+        "azal", "yayinlan", "duyurul", "yenilen", "insa", "katil", "gorus", "gel", "konus",
     )) and not _relative(token):
         return True
     return False
@@ -288,25 +326,33 @@ def _clauses(value: str) -> list[list[str]]:
     return out
 
 
+def _block_phrase_before(items: list[str], head_index: int, out: set[int], *, max_tokens: int = 7) -> None:
+    for j in range(head_index - 1, max(-1, head_index - max_tokens - 1), -1):
+        t = items[j]
+        if _company_object_target(t) and not _genitive_company(t):
+            break
+        if _procure(t) or t in _COORD:
+            break
+        if _company(t) or _transfer(t) or _genitive_company(t):
+            out.add(j)
+
+
 def _blocked_agent_indices(items: list[str]) -> set[int]:
     out: set[int] = set()
     for marker_index, tok in enumerate(items):
-        if not tok.startswith(_AGENT_MARKERS):
+        attached = tok.startswith(_AGENT_MARKERS)
+        split = tok == "ile" and marker_index > 0 and items[marker_index - 1].startswith(_SPLIT_AGENT_HEADS)
+        if not attached and not split:
             continue
         out.add(marker_index)
-        if marker_index == 0:
-            continue
-        head = marker_index - 1
-        if _company(items[head]) or _transfer(items[head]):
-            out.add(head)
-        for j in range(marker_index - 2, max(-1, marker_index - 7), -1):
-            t = items[j]
-            if _company_object_target(t) and not _genitive_company(t):
-                break
-            if _procure(t):
-                break
-            if _company(t) or _transfer(t) or _genitive_company(t):
-                out.add(j)
+        phrase_head = marker_index if attached else marker_index - 1
+        if split:
+            out.add(phrase_head)
+        if phrase_head > 0:
+            head = phrase_head - 1
+            if _company(items[head]) or _transfer(items[head]) or _genitive_company(items[head]):
+                out.add(head)
+        _block_phrase_before(items, phrase_head, out)
     return out
 
 
@@ -326,10 +372,14 @@ def _adjunct_indices(items: list[str]) -> set[int]:
 def _blocked_vendor_indices(items: list[str]) -> set[int]:
     out: set[int] = set()
     for i, tok in enumerate(items):
-        if _source_company(tok) or _comitative_company(tok):
-            out.add(i)
-        if _company(tok) and i + 1 < len(items) and items[i + 1] == "ile":
-            out.update({i, i + 1})
+        vendor = _source_company(tok) or _comitative_company(tok)
+        split = _company(tok) and i + 1 < len(items) and items[i + 1] == "ile"
+        if not vendor and not split:
+            continue
+        out.add(i)
+        if split:
+            out.add(i + 1)
+        _block_phrase_before(items, i, out)
     return out
 
 
@@ -465,7 +515,7 @@ def _purchase_decision(text: str) -> str:
                     return "mna"
                 compact_heading = (
                     bool(before) and len(before) <= 4
-                    and any(_company(t) for t in before)
+                    and any(_company(t) or t.startswith(_CORPORATE_HEADS) for t in before)
                     and not any(_procure(t) for t in before)
                     and not _has_finite(after)
                     and not any(t.startswith(_ORG_UNITS) for t in after)
@@ -509,7 +559,6 @@ def _devralma_decision(text: str) -> str:
                 return "mna"
             if gov_obj:
                 continue
-
             if tok.startswith("devralin"):
                 role = _nearest_role_before(items, i)
                 if role and role[0] == "transfer":
@@ -523,7 +572,6 @@ def _devralma_decision(text: str) -> str:
                 if role2 and role2[0] in {"procure", "operational"}:
                     saw_procurement = True
                 continue
-
             if tok.startswith("devralma"):
                 role = _nearest_role_before(items, i)
                 if role and role[0] == "transfer":
@@ -532,18 +580,15 @@ def _devralma_decision(text: str) -> str:
                 if role2 and role2[0] == "transfer":
                     return "mna"
                 continue
-
             if tok.endswith(("irken", "arken", "erken")):
                 continue
-
             for j in range(i + 1, len(items)):
-                if _finite(items[j]):
+                if j > i + 1 and _finite(items[j]):
                     break
                 if j in blocked:
                     continue
                 t = items[j]
-                if ((_transfer(t) and not _company(t) and _object_case(t)) or _company_object_target(t)) \
-                        and not _speaker(t) and not _genitive_company(t) and not _dative_company(t):
+                if ((_transfer(t) and not _company(t) and _object_case(t)) or _company_object_target(t)) and not _speaker(t) and not _genitive_company(t) and not _dative_company(t):
                     return "mna"
     return "procurement" if saw_procurement else "none"
 
@@ -650,11 +695,15 @@ def _merger_match(subject: str, summary: str) -> bool:
 
 
 def _bound_corporate_head(items: list[str], predicate_index: int) -> bool:
-    allowed = ("iki", "ikiye", "ayri", "kismi", "tam", "olarak")
     for j in range(predicate_index - 1, -1, -1):
-        if items[j].startswith(_CORPORATE_HEADS):
-            between = items[j + 1:predicate_index]
-            return all(x.startswith(allowed) for x in between)
+        if not items[j].startswith(_CORPORATE_HEADS):
+            continue
+        between = items[j + 1:predicate_index]
+        if any(x.startswith(_SPLIT_OBJECT_BLOCKERS) for x in between):
+            return False
+        if any(_company(x) or _transfer(x) or _procure(x) or _gov(x) for x in between):
+            return False
+        return True
     return False
 
 
@@ -676,10 +725,7 @@ def _split_match(subject: str, summary: str) -> bool:
             if any(_starts(x, _DEBT) for x in items[max(0, i - 6):i]):
                 continue
             pos_oper = max([j for j in range(i) if items[j].startswith(_OPERATIONAL)] or [-1])
-            pos_company = max([
-                j for j in range(i)
-                if _company(items[j]) or items[j].startswith(("pay", "hisse", "sermaye"))
-            ] or [-1])
+            pos_company = max([j for j in range(i) if _company(items[j]) or items[j].startswith(("pay", "hisse", "sermaye"))] or [-1])
             if pos_oper > pos_company:
                 continue
             if pos_company >= 0 or _bound_corporate_head(items, i) or any(_company(x) for x in items[i + 1:]):
@@ -717,24 +763,18 @@ def _devir_match(subject: str, summary: str) -> bool:
             if prev and (_gov(prev) or _dative_company(prev)):
                 continue
             nearby = items[max(0, i - 6):min(len(items), i + 7)]
-            explicit = any(
-                _transfer(x) and _object_case(x) and not _genitive_company(x) and not _dative_company(x)
-                for x in nearby
-            )
+            explicit = any(_transfer(x) and _object_case(x) and not _genitive_company(x) and not _dative_company(x) for x in nearby)
             if explicit:
                 return True
             if any(_gov(x) for x in nearby):
                 continue
-            if any(
-                _company(x) and not _speaker(x) and not _source_company(x) and not _dative_company(x)
-                for x in items[i + 1:]
-            ):
+            if any(_company(x) and not _speaker(x) and not _source_company(x) and not _dative_company(x) for x in items[i + 1:]):
                 return True
     return False
 
 
 def _repurchase_object(items: list[str], idx: int) -> str:
-    for j in range(idx - 1, max(-1, idx - 7), -1):
+    for j in range(idx - 1, max(-1, idx - 9), -1):
         t = items[j]
         if t in _COORD:
             break
@@ -742,6 +782,10 @@ def _repurchase_object(items: list[str], idx: int) -> str:
             continue
         if t == "ile":
             break
+        if t.startswith(_REPURCHASE_MODIFIERS) or (_relative(t) and not (
+            t.startswith(("pay", "hisse")) or _starts(t, _DEBT) or _starts(t, _PRODUCT) or _procure(t) or _transfer(t)
+        )):
+            continue
         return t
     return ""
 
@@ -767,18 +811,11 @@ def _repurchase_match(subject: str, summary: str) -> bool:
 def _contract_segments(value: str) -> list[str]:
     protected = str(value or "").replace("A.Ş.", "AS").replace("a.ş.", "as")
     protected = re.sub(r"(?<=\d)\.(?=\s*[A-Za-zÇĞİÖŞÜçğıöşü])", " ", protected)
-    return [
-        normalize(p).strip()
-        for p in re.split(r"[,!?;:\n]+|\.(?=\s+[A-Za-zÇĞİÖŞÜçğıöşü])", protected)
-        if normalize(p).strip()
-    ]
+    return [normalize(p).strip() for p in re.split(r"[,!?;:\n]+|\.(?=\s+[A-Za-zÇĞİÖŞÜçğıöşü])", protected) if normalize(p).strip()]
 
 
 def _articles_reference(seg: str) -> bool:
-    return bool(re.search(
-        r"\bsozlesme\w*\s+\d+(?:\W*(?:nci|inci|uncu|numarali|sayili))?\s+madde\w*",
-        seg,
-    ))
+    return bool(re.search(r"\bsozlesme\w*(?:\s+\w+){0,5}\s+\d+(?:\W*(?:nci|inci|uncu|numarali|sayili))?\s+madde\w*", seg))
 
 
 def _contract_match(subject: str, summary: str) -> bool:
@@ -843,13 +880,7 @@ def _procurement_operation(subject: str, summary: str) -> bool:
     return _devralma_decision(text) == "procurement"
 
 
-def classify_event_fields(
-    subject: str,
-    summary: str,
-    disclosure_type: str,
-    is_corrective: bool,
-    event_rules: Iterable[tuple[str, int, tuple[str, ...]]],
-) -> tuple[str, int, str]:
+def classify_event_fields(subject: str, summary: str, disclosure_type: str, is_corrective: bool, event_rules: Iterable[tuple[str, int, tuple[str, ...]]]) -> tuple[str, int, str]:
     category = "other"
     score = 0
     if str(disclosure_type).upper() in {"FR", "FS"}:
