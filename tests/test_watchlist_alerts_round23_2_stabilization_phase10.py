@@ -99,6 +99,44 @@ def test_round23_2_latest_exact_head_regressions(subject, expected):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("subject", "expected"),
+    [
+        (
+            "ABC şirketinin enerji iştiraki tarafından makine satın alındı",
+            ("operations", 80, "medium"),
+        ),
+        (
+            "Kullanım hakkı yenilendi ve yeni tesis kurulacaktır",
+            ("operations", 80, "medium"),
+        ),
+        (
+            "Müşterilere bedelsiz hizmet verilecek ve fiyatlar artırılacaktır",
+            ("other", 0, "low"),
+        ),
+        (
+            "Şirketlerin depoları birleşme sonrasında kullanılacaktır",
+            ("mna", 90, "high"),
+        ),
+        ("Portföy devir hızı yükseldi", ("other", 0, "low")),
+        ("Pay ihracı ve ürün geri alım programı", ("other", 0, "low")),
+        (
+            "Satın alacak olduğumuz ve Türkiye'de kurulu şirket",
+            ("mna", 90, "high"),
+        ),
+        ("ABC firması satın alma departmanı kurdu", ("other", 0, "low")),
+        ("Ortaklığın tamamının satışı", ("ownership", 80, "medium")),
+        ("Ortaklığın planlanan satışı", ("ownership", 80, "medium")),
+        ("Makine Satın Alımı", ("operations", 80, "medium")),
+        ("Yeni ekipman satın alımı", ("operations", 80, "medium")),
+        ("Hammadde satın alma kararı", ("operations", 80, "medium")),
+    ],
+)
+def test_round23_2_current_review_root_regressions(subject, expected):
+    assert alert_service.classify_kap_disclosure(_disclosure(subject)) == expected
+
+
+@pytest.mark.unit
 def test_articles_suppression_is_local_to_articles_segment():
     disclosure = _disclosure(
         "Esas Sözleşme Tadili",
@@ -121,6 +159,19 @@ def test_articles_reference_still_does_not_reactivate_commercial_rule():
         "other",
         0,
         "low",
+    )
+
+
+@pytest.mark.unit
+def test_independent_contract_amendment_remains_commercial_under_articles_subject():
+    disclosure = _disclosure(
+        "Esas Sözleşme Tadili",
+        "Tedarik sözleşmesi tadil edildi",
+    )
+    assert alert_service.classify_kap_disclosure(disclosure) == (
+        "commercial",
+        85,
+        "high",
     )
 
 
