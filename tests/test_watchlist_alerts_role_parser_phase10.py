@@ -171,3 +171,31 @@ def test_role_parser_latest_exact_head_closure(subject, expected):
 )
 def test_role_parser_closes_70b603_exact_head_findings(subject, expected):
     assert alert_service.classify_kap_disclosure(_disclosure(subject)) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("subject", "expected"),
+    [
+        ("ABC şirketi ihalede satın aldı ve teknoloji firması toplantıda beklerler", ("commercial", 85, "high")),
+        ("ABC A.Ş. raporu satın alındı", ("other", 0, "low")),
+        ("ABC Holding ortakları bölündü", ("other", 0, "low")),
+        ("Dosyalar firmalarımıza devredildi", ("other", 0, "low")),
+        ("Devraldı başarılı görüşmeler sonrasında ABC şirketini", ("mna", 90, "high")),
+        ("Ürüne yönelik olarak planlanan geri alım programı", ("other", 0, "low")),
+        ("ABC Enerji A.Ş.'nin satın alma komisyonu", ("other", 0, "low")),
+        ("Makine ABC firmasının çözüm ortağı ile satın alındı", ("operations", 80, "medium")),
+        ("Portföy devir işlem maliyeti arttı", ("other", 0, "low")),
+    ],
+)
+def test_role_parser_closes_631302_exact_head_findings(subject, expected):
+    assert alert_service.classify_kap_disclosure(_disclosure(subject)) == expected
+
+
+@pytest.mark.unit
+def test_articles_reference_does_not_cross_a_finished_contract_clause():
+    disclosure = _disclosure(
+        "Esas Sözleşme Tadili",
+        "Tedarik sözleşmesi imzalandı ve 6 sayılı maddesi tadil edildi",
+    )
+    assert alert_service.classify_kap_disclosure(disclosure) == ("commercial", 85, "high")
