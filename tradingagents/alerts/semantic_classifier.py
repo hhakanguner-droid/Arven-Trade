@@ -1,16 +1,16 @@
 """Compatibility facade for the consolidated Phase 10 semantic engine.
 
-Round 23 keeps this import path stable while moving the actual Turkish KAP
-semantics into ``semantic_engine_v23``.  The facade owns a per-load generation
-identity so hot reloads still force the stable Phase 10 orchestrator to rebuild
-the outer semantic wrappers.
+Round 23 keeps this import path stable while routing the actual Turkish KAP
+semantics through the Round 23.1 engine revision.  The facade owns a per-load
+generation identity so hot reloads still force the stable Phase 10 orchestrator
+to rebuild the outer semantic wrappers.
 """
 
 from __future__ import annotations
 
 from typing import Iterable
 
-from . import semantic_engine_v23 as _engine
+from . import semantic_engine_v23_1 as _engine
 
 IMPLEMENTATION_GENERATION = object()
 
