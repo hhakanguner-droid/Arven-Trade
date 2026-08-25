@@ -3,10 +3,10 @@
 from . import service as _service
 from .models import AlertSourceStatus, WatchlistAlert, WatchlistAlertBatch
 from .phase10_hardening import install as _install_phase10_hardening
-from .round15_hardening import install as _install_round15_hardening
 
+# One stable orchestration entry point installs the base and every follow-up
+# hardening layer. This remains correct after module hot reloads.
 _install_phase10_hardening(_service)
-_install_round15_hardening(_service)
 
 AlertStateStore = _service.AlertStateStore
 KapWatchlistAlertService = _service.KapWatchlistAlertService
