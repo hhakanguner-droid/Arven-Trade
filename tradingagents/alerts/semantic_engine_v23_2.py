@@ -29,53 +29,62 @@ def segments(*values: str) -> list[str]:
 
 
 def _legal_designator_pattern() -> str:
-    # ``normalize`` transliterates Turkish letters but intentionally preserves
-    # punctuation, so both ``A.Ş.`` -> ``a.s.`` and punctuation-free ``as``
-    # forms must remain valid at this compatibility boundary.
     return r"(?:a\.?s\.?|ltd\.?\s+sti\.?)"
 
 
-def _final_purchase_guard(subject: str, summary: str) -> bool | None:
-    text = normalize(f"{subject}. {summary}")
+def _purchase_guard_single(value: str) -> bool | None:
+    text = normalize(value)
+    if not text.strip():
+        return None
     legal = _legal_designator_pattern()
 
     # A beneficiary introduced by ``için`` is not the passive acquisition
     # target when an explicit procurement object precedes that phrase.
-    beneficiary = re.search(
+    if re.search(
         r"\b(?:makine|ekipman|hammadde|malzeme|urun|yazilim|elektrik|enerji)\w*\s+"
         r"(?:sirket|firma|ortaklik|isletme)\w*(?:\s+\w+){0,3}\s+icin\s+satin\s+alin\w*",
-        text,
-    )
-    if beneficiary:
-        return False
-
-    # A legal-company genitive heading followed by ``satın alma ihalesi`` is
-    # procurement by that company, not acquisition of the company itself.
-    if re.search(
-        rf"\b\w+(?:\s+\w+){{0,3}}\s+{legal}['’]?\w*\s+satin\s+alma\s+ihale\w*",
         text,
     ):
         return False
 
-    # Preserve a legal-name passive target when a later company-valued phrase
-    # is explicitly marked as the purchasing agent.
-    legal_agent = re.search(
+    # Procurement headings owned by a company are buyer-owned procurement,
+    # not acquisitions. Cover legal names and ordinary possessive company heads.
+    if re.search(
+        rf"\b\w+(?:\s+\w+){{0,3}}\s+{legal}['’]?\w*\s+satin\s+alma\s+ihale\w*",
+        text,
+    ) or re.search(
+        r"\b(?:sirket|firma|ortaklik|isletme|holding|grup)\w*(?:['’]\w*)?\s+"
+        r"satin\s+alma\s+ihale\w*",
+        text,
+    ):
+        return False
+
+    # Preserve a legal-name passive target when a later phrase is explicitly
+    # marked as the purchasing agent.
+    if re.search(
         rf"\b\w+(?:\s+\w+){{0,3}}\s+{legal}\s+"
         r"(?:\w+\s+){0,3}(?:sirket|firma|ortaklik|isletme)\w*\s+tarafindan\s+"
         r"(?:\w+\s+){0,3}satin\s+alin\w*",
         text,
-    )
-    if legal_agent:
-        return True
-
-    # Compatibility positives that are structurally company-target noun
-    # phrases but are intentionally conservative in the role parser.
-    if re.search(
-        r"\bsatin\s+aldig\w*(?:\s+\w+){0,6}\s+kurul\w*\s+"
-        r"(?:sirket|firma|ortaklik|isletme)\w*\b",
-        text,
     ):
         return True
+
+    # Compatibility positive: ``Satın aldığımız ... kurulmuş şirket`` is an
+    # acquisition only when no explicit procurement object intervenes before
+    # the company head. This prevents ``satın aldığımız makinenin kurulduğu
+    # şirketle ...`` from borrowing the later company as the purchase target.
+    rel = re.search(
+        r"\bsatin\s+aldig\w*(?P<middle>(?:\s+\S+){0,8})\s+"
+        r"(?:sirket|firma|ortaklik|isletme)\w*\b",
+        text,
+    )
+    if rel:
+        middle = rel.group("middle")
+        if re.search(r"\b(?:makine|ekipman|hammadde|malzeme|urun|yazilim|elektrik|enerji)\w*", middle):
+            return False
+        if re.search(r"\bkurul\w*\b", middle):
+            return True
+
     if re.search(
         r"\bsatin\s+alin\w*\s+(?:elektrik|enerji)\w*\s+dagitim\w*\s+"
         r"(?:sirket|firma|ortaklik|isletme)\w*\b",
@@ -85,53 +94,84 @@ def _final_purchase_guard(subject: str, summary: str) -> bool | None:
     return None
 
 
+def _final_purchase_guard(subject: str, summary: str) -> bool | None:
+    decisions = [_purchase_guard_single(subject), _purchase_guard_single(summary)]
+    # A concrete acquisition in either field outranks an unrelated procurement
+    # clause in the other field.
+    if True in decisions:
+        return True
+    if False in decisions:
+        return False
+    return None
+
+
 def _final_devralma_guard(subject: str, summary: str) -> bool | None:
-    text = normalize(f"{subject}. {summary}")
-    # Proper-name accusatives keep their apostrophe in normalized raw text even
-    # though tokenization splits them. With a company actor in the same clause,
-    # ``Şirket X'i Devraldı`` is an explicit acquisition target.
+    raw = f"{subject}. {summary}"
+    text = normalize(raw)
+
+    # Compatibility target ``Şirket X'i Devraldı`` is intentionally limited to
+    # ticker/acronym-like proper names. Mixed-case product names such as iPhone
+    # must not be promoted to M&A solely because they are case-marked.
     if re.search(
-        r"\b(?:sirket|firma|ortaklik|isletme)\w*\s+"
-        r"[a-z0-9]+\s*['’]\s*(?:i|yi|u|yu)\s+devral\w*\b",
-        text,
+        r"\b(?:Şirket|Firma|Ortaklık|İşletme)\w*\s+[A-Z0-9]{1,10}['’](?:i|ı|u|ü|yi|yı|yu|yü)\s+Devral\w*\b",
+        raw,
+        re.IGNORECASE if False else 0,
+    ):
+        return True
+    # Preserve normalized all-uppercase ASCII compatibility where Turkish case
+    # folding is not involved in the source text.
+    if re.search(
+        r"\b(?:sirket|firma|ortaklik|isletme)\w*\s+[A-Z0-9]{1,10}\s*['’]\s*(?:i|yi|u|yu)\s+devral\w*\b",
+        raw,
     ):
         return True
     return None
 
 
-def _final_repurchase_guard(subject: str, summary: str) -> bool | None:
-    text = normalize(f"{subject}. {summary}")
-    # ``ekmek``/``yemek`` are nouns despite sharing the Turkish infinitive
-    # suffix shape. They must remain explicit product objects.
-    if re.search(r"\b(?:ekmek|yemek)\s+geri\s+alim\w*\s+program\w*", text):
+def _repurchase_guard_single(value: str) -> bool | None:
+    text = normalize(value)
+    if not re.search(r"\bgeri\s+alim\w*", text):
+        return None
+    if re.search(r"\b(?:pay|hisse)\w*\s+geri\s+alim\w*", text):
+        return True
+    if re.search(r"\b(?:ekmek|yemek|urun|malzeme|makine|ekipman)\w*\s+geri\s+alim\w*", text):
         return False
     return None
+
+
+def _final_repurchase_guard(subject: str, summary: str) -> bool | None:
+    decisions = [_repurchase_guard_single(subject), _repurchase_guard_single(summary)]
+    # Negative product guards are clause/field-local: a genuine share buyback in
+    # the other field must still alert.
+    if True in decisions:
+        return True
+    if False in decisions:
+        return False
+    return None
+
+
+def _named_commercial_contract(text: str) -> bool:
+    normalized = normalize(text)
+    for match in re.finditer(r"\b([a-z0-9]+)\w*\s+sozlesme\w*", normalized):
+        descriptor = match.group(1)
+        if descriptor not in {"esas", "ana", "sirket", "ortaklik"}:
+            return True
+    return False
 
 
 def _independent_commercial_contract(subject: str, summary: str) -> bool:
     if not re.search(r"\b(?:esas|ana)\s+sozlesme\w*", normalize(subject)):
         return False
-    text = normalize(summary)
-    # A numbered article of an independently named commercial agreement is
-    # still a commercial-contract event; the articles-of-association exclusion
-    # must not leak across contract identities.
-    return bool(re.search(
-        r"\b(?:tedarik|hizmet|kredi|lisans|kira|satis|satim|alim|isbirligi|dagitim)\w*\s+"
-        r"sozlesme\w*(?:\s+\w+){0,5}\s+\d+\s+(?:sayili|numarali|nci|inci|uncu)?\s*madde\w*",
-        text,
-    ))
+    return _named_commercial_contract(summary)
 
 
 def _articles_shorthand_reference(subject: str, summary: str) -> bool:
     """Identify generic summary references back to an articles subject."""
     if not re.search(r"\b(?:esas|ana)\s+sozlesme\w*", normalize(subject)):
         return False
-    text = normalize(summary)
-    if re.search(
-        r"\b(?:tedarik|hizmet|kredi|lisans|kira|satis|satim|alim|isbirligi|dagitim)\w*\s+sozlesme\w*",
-        text,
-    ):
+    if _named_commercial_contract(summary):
         return False
+    text = normalize(summary)
     return bool(re.search(r"\bsozlesme\w*(?:\s+\w+){0,5}\s+madde\w*", text))
 
 
@@ -210,9 +250,6 @@ def classify_event_fields(
                 False,
                 event_rules,
             )
-            # Explicit negative guards are authoritative. The fallback exists
-            # for compatibility but must not resurrect the exact semantic class
-            # that a final guard deliberately rejected.
             if repurchase_guard is False and base_category == "ownership":
                 base_score = -1
             if articles_shorthand and base_category == "commercial":
