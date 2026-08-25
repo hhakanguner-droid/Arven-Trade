@@ -112,10 +112,10 @@ def test_legal_framing_modifiers_are_allowed_inside_right_creation_phrase():
 
 
 @pytest.mark.unit
-def test_reloaded_round18_direct_install_routes_through_round20_chain():
+def test_reloaded_round18_direct_install_routes_through_latest_chain():
     phase10 = importlib.import_module("tradingagents.alerts.phase10_hardening")
     round18 = importlib.import_module("tradingagents.alerts.round18_hardening")
-    round20 = importlib.import_module("tradingagents.alerts.round20_hardening")
+    round22 = importlib.import_module("tradingagents.alerts.round22_consolidation")
 
     phase10.install(alert_service)
     old_install = round18.install
@@ -124,19 +124,19 @@ def test_reloaded_round18_direct_install_routes_through_round20_chain():
 
     round18.install(alert_service)
 
-    assert alert_service._PHASE10_HARDENING_CHAIN_INSTALLED == "phase10-round20"
+    assert alert_service._PHASE10_HARDENING_CHAIN_INSTALLED == "phase10-round22"
     assert alert_service._PHASE10_HARDENING_INSTALLER_IDENTITIES[3] is round18.install
     assert (
-        alert_service._satin_alma_is_acquisition._phase10_round20_generation
-        is round20.INSTALL_GENERATION
+        alert_service._satin_alma_is_acquisition._phase10_round22_generation
+        is round22.INSTALL_GENERATION
     )
 
 
 @pytest.mark.unit
-def test_reloaded_round19_direct_install_routes_through_round20_chain():
+def test_reloaded_round19_direct_install_routes_through_latest_chain():
     phase10 = importlib.import_module("tradingagents.alerts.phase10_hardening")
     round19 = importlib.import_module("tradingagents.alerts.round19_hardening")
-    round20 = importlib.import_module("tradingagents.alerts.round20_hardening")
+    round22 = importlib.import_module("tradingagents.alerts.round22_consolidation")
 
     phase10.install(alert_service)
     old_install = round19.install
@@ -145,11 +145,11 @@ def test_reloaded_round19_direct_install_routes_through_round20_chain():
 
     round19.install(alert_service)
 
-    assert alert_service._PHASE10_HARDENING_CHAIN_INSTALLED == "phase10-round20"
+    assert alert_service._PHASE10_HARDENING_CHAIN_INSTALLED == "phase10-round22"
     assert alert_service._PHASE10_HARDENING_INSTALLER_IDENTITIES[4] is round19.install
     assert (
-        alert_service._satin_alma_is_acquisition._phase10_round20_generation
-        is round20.INSTALL_GENERATION
+        alert_service._satin_alma_is_acquisition._phase10_round22_generation
+        is round22.INSTALL_GENERATION
     )
 
 
