@@ -108,8 +108,35 @@ def test_role_parser_preserves_prior_regression_contract(subject, expected):
         ("Tedarik sözleşmesi tadil edildi", ("commercial", 85, "high")),
         ("Sözleşmenin tedarik maddesi tadil edildi", ("commercial", 85, "high")),
         ("Sözleşmenin tedarik maddesi 2 kez tadil edildi", ("commercial", 85, "high")),
+        ("Sözleşmenin 6'ncı maddesi tadil edilmiştir", ("other", 0, "low")),
+        ("Sözleşmenin 6 sayılı maddesi tadil edilmiştir", ("other", 0, "low")),
     ],
 )
 def test_articles_reference_is_structural_not_clause_wide(summary, expected):
     disclosure = _disclosure("Esas Sözleşme Tadili", summary)
     assert alert_service.classify_kap_disclosure(disclosure) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("subject", "expected"),
+    [
+        ("Makine ABC şirketinin yatırım bankası aracılığıyla satın alındı", ("operations", 80, "medium")),
+        ("Devraldı ABC şirketini", ("mna", 90, "high")),
+        ("Devraldı hisselerini", ("mna", 90, "high")),
+        ("ABC Holding çalışanları bölündü", ("other", 0, "low")),
+        ("ABC Grup personeli bölündü", ("other", 0, "low")),
+        ("ABC şirketi ihalede satın aldı ve teknoloji firması toplantıya gelecekler", ("commercial", 85, "high")),
+        ("ABC şirketi ihalede satın aldı ve teknoloji firması toplantıya geliyorlar", ("commercial", 85, "high")),
+        ("ABC şirketi ihalede satın aldı ve teknoloji firması toplantıya gelmişler", ("commercial", 85, "high")),
+        ("ABC A.Ş. dün satın alındı", ("mna", 90, "high")),
+        ("ABC Ltd. Şti. tamamen satın alındı", ("mna", 90, "high")),
+        ("Dosyalar şirkete devredildi", ("other", 0, "low")),
+        ("Dosyalar firmaya devredildi", ("other", 0, "low")),
+        ("Dosyalar ortaklığa devredildi", ("other", 0, "low")),
+        ("Dosyalar işletmeye devredildi", ("other", 0, "low")),
+        ("Yeni tesis kuruluşu tamamlandı", ("operations", 80, "medium")),
+    ],
+)
+def test_role_parser_latest_exact_head_closure(subject, expected):
+    assert alert_service.classify_kap_disclosure(_disclosure(subject)) == expected
