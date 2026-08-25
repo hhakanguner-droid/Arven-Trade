@@ -132,6 +132,8 @@ def _speaker(token: str) -> bool:
 
 
 def _transfer(token: str) -> bool:
+    if token.startswith("paylas"):
+        return False
     return _starts(token, _TRANSFER)
 
 
@@ -180,15 +182,15 @@ def _dative_company(token: str) -> bool:
     )):
         return True
     if token.startswith("sirket"):
-        return token.endswith(("ete", "ine", "e", "lere", "lerine"))
+        return token.endswith(("ete", "etime", "etine", "etimize", "etinize", "ine", "e", "lere", "lerine"))
     if token.startswith("firma"):
-        return token.endswith(("maya", "ya", "sina", "ina", "lara", "larina"))
+        return token.endswith(("maya", "ya", "mama", "nana", "sina", "ina", "lara", "larina"))
     if token.startswith(("ortaklik", "ortaklig")):
-        return token.endswith(("liga", "ligina", "lara", "larina"))
+        return token.endswith(("liga", "ligima", "ligina", "ligimiza", "liginiza", "lara", "larina"))
     if token.startswith("isletme"):
-        return token.endswith(("meye", "sine", "lerine", "lere"))
+        return token.endswith(("meye", "meme", "nene", "sine", "lerine", "lere"))
     if token.startswith("istirak"):
-        return token.endswith(("e", "ine", "lere", "lerine"))
+        return token.endswith(("e", "ime", "ine", "imize", "inize", "lere", "lerine"))
     return False
 
 
@@ -225,7 +227,14 @@ def _comitative_company(token: str) -> bool:
 
 def _proper_accusative(items: list[str]) -> bool:
     for i, tok in enumerate(items):
-        if tok in {"i", "yi", "u", "yu", "ni", "nu"} and i > 0 and not _company(items[i - 1]):
+        if tok not in {"i", "yi", "u", "yu", "ni", "nu"} or i == 0:
+            continue
+        base = items[i - 1]
+        if _company(base) or _procure(base) or _transfer(base):
+            continue
+        if i > 1 and items[i - 2] == "model":
+            continue
+        if 2 <= len(base) <= 5:
             return True
     return False
 
@@ -347,6 +356,16 @@ def _finite(token: str) -> bool:
     return False
 
 
+def _finite_boundary(items: list[str], index: int) -> bool:
+    if not _finite(items[index]):
+        return False
+    token = items[index]
+    if token.endswith(("lar", "ler")) and index + 1 < len(items):
+        if items[index + 1] in {"dahil", "sonra", "once", "boyunca", "suresince", "kapsaminda"}:
+            return False
+    return True
+
+
 def _has_finite(items: list[str]) -> bool:
     return any(_finite(tok) for tok in items)
 
@@ -354,8 +373,18 @@ def _has_finite(items: list[str]) -> bool:
 def _clauses(value: str) -> list[list[str]]:
     out: list[list[str]] = []
     for sent in segments(value):
-        for raw in sent.split(","):
-            items = re.findall(r"\w+", raw)
+        comma_parts = [re.findall(r"\w+", raw) for raw in sent.split(",") if raw.strip()]
+        groups: list[list[str]] = []
+        current: list[str] = []
+        for part in comma_parts:
+            if current and _has_finite(current) and _has_finite(part):
+                groups.append(current)
+                current = list(part)
+            else:
+                current.extend(part)
+        if current:
+            groups.append(current)
+        for items in groups:
             start = 0
             for i, tok in enumerate(items):
                 if tok not in _COORD:
@@ -454,7 +483,7 @@ def _nearest_role_before(items: list[str], index: int) -> tuple[str, str] | None
 def _nearest_role_after(items: list[str], index: int, *, stop_at_finite: bool = False) -> tuple[str, str] | None:
     blocked = _blocked(items)
     for i in range(index, len(items)):
-        if stop_at_finite and i > index and _finite(items[i]):
+        if stop_at_finite and i > index and _finite_boundary(items, i):
             break
         if i in blocked:
             continue
@@ -463,7 +492,7 @@ def _nearest_role_after(items: list[str], index: int, *, stop_at_finite: bool = 
             return "unit", tok
         if _procure(tok):
             for j in range(i + 1, min(len(items), i + 7)):
-                if stop_at_finite and _finite(items[j]):
+                if stop_at_finite and _finite_boundary(items, j):
                     break
                 if j in blocked:
                     continue
@@ -628,7 +657,7 @@ def _devralma_decision(text: str) -> str:
             if tok.endswith(("irken", "arken", "erken")):
                 continue
             for j in range(i + 1, len(items)):
-                if j > i + 1 and _finite(items[j]):
+                if j > i + 1 and _finite_boundary(items, j):
                     break
                 if j in blocked:
                     continue
@@ -718,10 +747,22 @@ def _capital_match(subject: str, summary: str, term: str) -> bool:
     return False
 
 
+def _internal_unit_before(items: list[str], predicate_index: int) -> bool:
+    for j in range(predicate_index - 1, -1, -1):
+        token = items[j]
+        if token.startswith(_ORG_UNITS):
+            return True
+        if _company(token) or token.startswith(_CORPORATE_HEADS):
+            return False
+    return False
+
+
 def _merger_match(subject: str, summary: str) -> bool:
     for items in _clauses(f"{subject}. {summary}"):
         for i, t in enumerate(items):
             if t.startswith("birlesik") or not t.startswith("birles"):
+                continue
+            if _internal_unit_before(items, i):
                 continue
             if t.startswith("birlesme"):
                 if any(_company(x) or x.startswith(("pay", "hisse", "sermaye", "holding", "grup")) for x in items):
@@ -750,7 +791,11 @@ def _bound_corporate_head(items: list[str], predicate_index: int) -> bool:
             return False
         if any(_object_case(x) and not _dative_company(x) and not _modifier_like(x) for x in between):
             return False
-        if any(x.endswith(("lar", "ler")) and not _finite(x) and not _modifier_like(x) for x in between):
+        for k, x in enumerate(between):
+            if not (x.endswith(("lar", "ler")) and not _finite(x) and not _modifier_like(x)):
+                continue
+            if k + 1 < len(between) and between[k + 1] in {"sonra", "once", "boyunca", "suresince"}:
+                continue
             return False
         if any(_company(x) or _transfer(x) or _procure(x) or _gov(x) for x in between):
             return False
@@ -825,11 +870,17 @@ def _devir_match(subject: str, summary: str) -> bool:
 
 
 def _repurchase_object(items: list[str], idx: int) -> str:
+    skip_bir = False
     for j in range(idx - 1, max(-1, idx - 11), -1):
         t = items[j]
         if t in _COORD:
             break
         if t.startswith(_POSTPOSITIONS):
+            if t.startswith(("sekilde", "bicimde")):
+                skip_bir = True
+            continue
+        if t == "bir" and skip_bir:
+            skip_bir = False
             continue
         if t == "ile":
             break
@@ -928,7 +979,7 @@ def _ownership_match(subject: str, summary: str) -> bool:
                     mods = items[i + 1:s]
                     if any(_starts(x, _SALE_ASSETS) or _procure(x) for x in mods):
                         break
-                    if mods and not all(x.startswith(_ALLOWED_SALE_MODIFIERS) for x in mods):
+                    if mods and not all(x.startswith(_ALLOWED_SALE_MODIFIERS) or _modifier_like(x) for x in mods):
                         break
                     return True
     return False
