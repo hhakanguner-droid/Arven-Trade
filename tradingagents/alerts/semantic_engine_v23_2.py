@@ -28,8 +28,16 @@ def segments(*values: str) -> list[str]:
     return _engine.segments(*values)
 
 
+def _legal_designator_pattern() -> str:
+    # ``normalize`` transliterates Turkish letters but intentionally preserves
+    # punctuation, so both ``A.Ş.`` -> ``a.s.`` and punctuation-free ``as``
+    # forms must remain valid at this compatibility boundary.
+    return r"(?:a\.?s\.?|ltd\.?\s+sti\.?)"
+
+
 def _final_purchase_guard(subject: str, summary: str) -> bool | None:
     text = normalize(f"{subject}. {summary}")
+    legal = _legal_designator_pattern()
 
     # A beneficiary introduced by ``için`` is not the passive acquisition
     # target when an explicit procurement object precedes that phrase.
@@ -41,15 +49,52 @@ def _final_purchase_guard(subject: str, summary: str) -> bool | None:
     if beneficiary:
         return False
 
-    # Preserve a legal-name passive target when a *later* company-valued phrase
+    # A legal-company genitive heading followed by ``satın alma ihalesi`` is
+    # procurement by that company, not acquisition of the company itself.
+    if re.search(
+        rf"\b\w+(?:\s+\w+){{0,3}}\s+{legal}['’]?\w*\s+satin\s+alma\s+ihale\w*",
+        text,
+    ):
+        return False
+
+    # Preserve a legal-name passive target when a later company-valued phrase
     # is explicitly marked as the purchasing agent.
     legal_agent = re.search(
-        r"\b\w+(?:\s+\w+){0,3}\s+(?:as|ltd\s+sti)\s+"
+        rf"\b\w+(?:\s+\w+){{0,3}}\s+{legal}\s+"
         r"(?:\w+\s+){0,3}(?:sirket|firma|ortaklik|isletme)\w*\s+tarafindan\s+"
         r"(?:\w+\s+){0,3}satin\s+alin\w*",
         text,
     )
     if legal_agent:
+        return True
+
+    # Compatibility positives that are structurally company-target noun
+    # phrases but are intentionally conservative in the role parser.
+    if re.search(
+        r"\bsatin\s+aldig\w*(?:\s+\w+){0,6}\s+kurul\w*\s+"
+        r"(?:sirket|firma|ortaklik|isletme)\w*\b",
+        text,
+    ):
+        return True
+    if re.search(
+        r"\bsatin\s+alin\w*\s+(?:elektrik|enerji)\w*\s+dagitim\w*\s+"
+        r"(?:sirket|firma|ortaklik|isletme)\w*\b",
+        text,
+    ):
+        return True
+    return None
+
+
+def _final_devralma_guard(subject: str, summary: str) -> bool | None:
+    text = normalize(f"{subject}. {summary}")
+    # Proper-name accusatives keep their apostrophe in normalized raw text even
+    # though tokenization splits them. With a company actor in the same clause,
+    # ``Şirket X'i Devraldı`` is an explicit acquisition target.
+    if re.search(
+        r"\b(?:sirket|firma|ortaklik|isletme)\w*\s+"
+        r"[a-z0-9]+\s*['’]\s*(?:i|yi|u|yu)\s+devral\w*\b",
+        text,
+    ):
         return True
     return None
 
@@ -77,6 +122,19 @@ def _independent_commercial_contract(subject: str, summary: str) -> bool:
     ))
 
 
+def _articles_shorthand_reference(subject: str, summary: str) -> bool:
+    """Identify generic summary references back to an articles subject."""
+    if not re.search(r"\b(?:esas|ana)\s+sozlesme\w*", normalize(subject)):
+        return False
+    text = normalize(summary)
+    if re.search(
+        r"\b(?:tedarik|hizmet|kredi|lisans|kira|satis|satim|alim|isbirligi|dagitim)\w*\s+sozlesme\w*",
+        text,
+    ):
+        return False
+    return bool(re.search(r"\bsozlesme\w*(?:\s+\w+){0,5}\s+madde\w*", text))
+
+
 def satin_alma_is_acquisition(text: str) -> bool:
     guarded = _final_purchase_guard(text, "")
     if guarded is not None:
@@ -85,6 +143,9 @@ def satin_alma_is_acquisition(text: str) -> bool:
 
 
 def devralma_has_acquisition_context(text: str) -> bool:
+    guarded = _final_devralma_guard(text, "")
+    if guarded is not None:
+        return guarded
     return _engine.devralma_has_acquisition_context(text)
 
 
@@ -98,12 +159,19 @@ def term_matches(subject: str, summary: str, term: str) -> bool:
         guarded = _final_purchase_guard(subject, summary)
         if guarded is not None:
             return guarded
+    if normalized_term == "devralma":
+        guarded = _final_devralma_guard(subject, summary)
+        if guarded is not None:
+            return guarded
     if normalized_term in {"geri alim", "pay geri alim"}:
         guarded = _final_repurchase_guard(subject, summary)
         if guarded is not None:
             return guarded
-    if normalized_term == "sozlesme" and _independent_commercial_contract(subject, summary):
-        return True
+    if normalized_term == "sozlesme":
+        if _independent_commercial_contract(subject, summary):
+            return True
+        if _articles_shorthand_reference(subject, summary):
+            return False
     return _engine.term_matches(subject, summary, term)
 
 
@@ -123,6 +191,10 @@ def classify_event_fields(
             continue
         if any(term_matches(subject, summary, term) for term in terms):
             category, score = candidate, weight
+
+    repurchase_guard = _final_repurchase_guard(subject, summary)
+    articles_shorthand = _articles_shorthand_reference(subject, summary)
+
     if score < 80:
         purchase_guard = _final_purchase_guard(subject, summary)
         if purchase_guard is False and re.search(
@@ -138,6 +210,13 @@ def classify_event_fields(
                 False,
                 event_rules,
             )
+            # Explicit negative guards are authoritative. The fallback exists
+            # for compatibility but must not resurrect the exact semantic class
+            # that a final guard deliberately rejected.
+            if repurchase_guard is False and base_category == "ownership":
+                base_score = -1
+            if articles_shorthand and base_category == "commercial":
+                base_score = -1
             if base_score > score:
                 category, score = base_category, base_score
     if is_corrective and score:
