@@ -264,9 +264,11 @@ def _legal_name_before_predicate(items: list[str]) -> bool:
     if candidate_end < 0:
         return False
     tail = items[candidate_end + 1:]
-    for tok in tail:
+    for pos, tok in enumerate(tail):
         if tok.startswith(_AGENT_MARKERS) or tok in _SPLIT_AGENT_HEADS:
-            return False
+            if pos == 0:
+                return False
+            continue
         if tok.startswith(_ORG_UNITS) or _company(tok) or _transfer(tok) or _procure(tok) or _gov(tok):
             return False
         if _object_case(tok) and not _modifier_like(tok):
@@ -463,11 +465,18 @@ def _blocked(items: list[str]) -> set[int]:
 
 def _nearest_role_before(items: list[str], index: int) -> tuple[str, str] | None:
     blocked = _blocked(items)
+    skip_governed = False
     for i in range(index - 1, -1, -1):
         if i in blocked:
             continue
         tok = items[i]
-        if tok in {"icin", "ile", "uzere", "yonelik", "hakkinda", "olarak"}:
+        if tok in {"icin", "uzere", "yonelik", "hakkinda", "dair", "iliskin"}:
+            skip_governed = True
+            continue
+        if tok in {"ile", "olarak"}:
+            continue
+        if skip_governed:
+            skip_governed = False
             continue
         if _procure(tok):
             return "procure", tok
@@ -884,6 +893,8 @@ def _repurchase_object(items: list[str], idx: int) -> str:
             continue
         if t == "ile":
             break
+        if t.endswith(("mak", "mek")):
+            continue
         if t.startswith(_REPURCHASE_MODIFIERS) or (_relative(t) and not (
             t.startswith(("pay", "hisse")) or _starts(t, _DEBT) or _starts(t, _PRODUCT) or _procure(t) or _transfer(t)
         )):
@@ -952,9 +963,10 @@ def _contract_match(subject: str, summary: str) -> bool:
         for seg in _contract_segments(value):
             if not re.search(r"(?<!\w)sozlesme\w*", seg):
                 continue
-            if _ARTICLES_RE.search(seg):
+            commercial_seg = _ARTICLES_RE.sub(" ", seg)
+            if not re.search(r"(?<!\w)sozlesme\w*", commercial_seg):
                 continue
-            if articles_subject and _articles_reference(seg):
+            if articles_subject and _articles_reference(commercial_seg):
                 continue
             return True
     return False
