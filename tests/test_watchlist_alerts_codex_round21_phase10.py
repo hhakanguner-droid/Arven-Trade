@@ -116,7 +116,7 @@ def test_reloaded_round18_base_is_part_of_phase10_readiness_identity():
 
     round18.install(alert_service)
 
-    assert alert_service._PHASE10_HARDENING_CHAIN_INSTALLED == "phase10-round21"
+    assert alert_service._PHASE10_HARDENING_CHAIN_INSTALLED == "phase10-round22"
     assert round18_base.install in alert_service._PHASE10_HARDENING_INSTALLER_IDENTITIES
 
 
@@ -135,7 +135,7 @@ def test_reloaded_round19_base_is_part_of_phase10_readiness_identity():
 
     round19.install(alert_service)
 
-    assert alert_service._PHASE10_HARDENING_CHAIN_INSTALLED == "phase10-round21"
+    assert alert_service._PHASE10_HARDENING_CHAIN_INSTALLED == "phase10-round22"
     assert round19_base.install in alert_service._PHASE10_HARDENING_INSTALLER_IDENTITIES
 
 
