@@ -32,6 +32,7 @@ def _disclosure(subject: str, summary: str = "", *, disclosure_id: int = 1) -> K
     [
         ("ABC Şirketini satın aldı", ("mna", 90, "high")),
         ("ABC firmasını satın aldı", ("mna", 90, "high")),
+        ("ABC Enerji A.Ş.'nin Satın Alınması", ("mna", 90, "high")),
         ("ABC Şirketi ihalede satın aldı, enerji şirketi fiyatları açıkladı", ("commercial", 85, "high")),
         ("Paylar üzerinde intifa hakkının bedelsiz tesisi", ("other", 0, "low")),
         ("Kullanım hakkına konu olacak yeni tesis kurulacaktır", ("operations", 80, "medium")),
@@ -41,6 +42,7 @@ def _disclosure(subject: str, summary: str = "", *, disclosure_id: int = 1) -> K
         ("Elektrik Enerjisi Satın Alımı İhalesi Şirket Tarafından Sonuçlandırıldı", ("commercial", 85, "high")),
         ("Şirket devralındı", ("mna", 90, "high")),
         ("İştirak Paylarının Devralınması", ("mna", 90, "high")),
+        ("İştirak yönetimini bağlı ortaklığı adına devraldı", ("governance", 65, "low")),
         ("Geri Alım Programı", ("ownership", 90, "high")),
         ("Kısmi Bölünme İşlemi", ("mna", 90, "high")),
         ("Tesis yönetimini devraldı", ("governance", 65, "low")),
