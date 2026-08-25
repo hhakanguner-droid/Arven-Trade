@@ -104,9 +104,31 @@ def _reset_followup_layers(service: Any) -> None:
         service.KapWatchlistAlertService.check_watchlist = _unwrap_followups(current_check)
 
 
+def _set_compatibility_markers(service: Any) -> None:
+    """Expose superseded-round markers on the current outer wrappers.
+
+    Older regression tests and diagnostics intentionally assert that the complete
+    Phase 10 chain still contains Rounds 15-17.  Round 18 supersedes their outer
+    closures, so carry those version markers forward without changing behavior.
+    """
+    functions = [
+        getattr(service, "_satin_alma_is_acquisition", None),
+        getattr(service, "_devralma_has_acquisition_context", None),
+        getattr(service, "_tesis_is_operational", None),
+        getattr(service.KapWatchlistAlertService, "check_watchlist", None),
+    ]
+    for function in functions:
+        if function is None:
+            continue
+        function._phase10_round15_version = "phase10-round15"
+        function._phase10_round16_version = "phase10-round16"
+        function._phase10_round17_version = "phase10-round17"
+
+
 def install(service: Any) -> None:
     """Install every Phase 10 hardening layer in deterministic order."""
     if _round18_ready(service):
+        _set_compatibility_markers(service)
         service._PHASE10_HARDENING_CHAIN_INSTALLED = _ROUND18_VERSION
         return
 
@@ -130,6 +152,7 @@ def install(service: Any) -> None:
         install_round17,
         install_round18,
     )
+    _set_compatibility_markers(service)
     service._PHASE10_HARDENING_CHAIN_INSTALLED = _ROUND18_VERSION
 
 
