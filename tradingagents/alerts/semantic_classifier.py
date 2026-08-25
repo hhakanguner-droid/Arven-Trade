@@ -1,46 +1,20 @@
-"""Compatibility facade for the consolidated Phase 10 semantic engine.
-
-Round 23 keeps this import path stable while routing the actual Turkish KAP
-semantics through the Round 23.1 engine revision.  The facade owns a per-load
-generation identity so hot reloads still force the stable Phase 10 orchestrator
-to rebuild the outer semantic wrappers.
-"""
+"""Stable facade for the consolidated Phase 10 KAP semantic engine."""
 
 from __future__ import annotations
 
 from typing import Iterable
 
-from . import semantic_engine_v23_1 as _engine
+from . import semantic_engine_v23_2 as _engine
 
 IMPLEMENTATION_GENERATION = object()
 
-
-def normalize(value: str) -> str:
-    return _engine.normalize(value)
-
-
-def tokens(value: str) -> list[str]:
-    return _engine.tokens(value)
-
-
-def segments(*values: str) -> list[str]:
-    return _engine.segments(*values)
-
-
-def satin_alma_is_acquisition(text: str) -> bool:
-    return _engine.satin_alma_is_acquisition(text)
-
-
-def devralma_has_acquisition_context(text: str) -> bool:
-    return _engine.devralma_has_acquisition_context(text)
-
-
-def tesis_is_operational(text: str) -> bool:
-    return _engine.tesis_is_operational(text)
-
-
-def term_matches(subject: str, summary: str, term: str) -> bool:
-    return _engine.term_matches(subject, summary, term)
+normalize = _engine.normalize
+tokens = _engine.tokens
+segments = _engine.segments
+satin_alma_is_acquisition = _engine.satin_alma_is_acquisition
+devralma_has_acquisition_context = _engine.devralma_has_acquisition_context
+tesis_is_operational = _engine.tesis_is_operational
+term_matches = _engine.term_matches
 
 
 def classify_event_fields(
