@@ -100,10 +100,31 @@ def _significance(disclosure) -> tuple[int, datetime]:
     return score, disclosure.publish_datetime
 
 
+def _priority_is_actionable(priority: tuple) -> bool:
+    """Read actionability from either supported selector-key contract.
+
+    The raw KAP key is ``(score, published_at)``. Alert polling supplies the
+    richer ``(unseen, important, significance_band, recency, score)`` tuple.
+    The leading unseen flag is *not* significance; for that contract the second
+    component is the authoritative importance flag.
+    """
+    if len(priority) >= 5:
+        return bool(priority[1])
+    if not priority:
+        return False
+    first = priority[0]
+    if isinstance(first, bool):
+        return first
+    try:
+        return float(first) > 0
+    except (TypeError, ValueError):
+        return bool(first)
+
+
 def _select_significant(
     disclosures: Iterable,
     limit: int,
-    significance_key: Callable[[object], tuple[int, datetime]] | None = None,
+    significance_key: Callable[[object], tuple] | None = None,
 ) -> list:
     """Select a bounded mix of fresh actionable and significant disclosures.
 
@@ -120,7 +141,7 @@ def _select_significant(
 
     key = significance_key or _significance
     scored = [(item, key(item)) for item in items]
-    actionable = [pair for pair in scored if pair[1][0] > 0]
+    actionable = [pair for pair in scored if _priority_is_actionable(pair[1])]
 
     if not actionable:
         return sorted(items, key=lambda item: item.publish_datetime, reverse=True)[:limit]
@@ -164,7 +185,7 @@ class KapService:
         *,
         lookback_days: int = 30,
         include_attachments: bool = True,
-        significance_key: Callable[[object], tuple[int, datetime]] | None = None,
+        significance_key: Callable[[object], tuple] | None = None,
         summary_limit: int | None = 600,
     ) -> KapDisclosureResult:
         today = date.today()
