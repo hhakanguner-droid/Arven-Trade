@@ -51,15 +51,17 @@ _VENDOR_HEADS = (
     "ortak", "ortagi", "tedarikci", "satici", "bayi", "yuklenici", "danisman", "araci",
     "distributor", "acent", "temsilci",
 )
+_VENDOR_BRIDGES = ("ile", "uzerinden", "araciligiyla", "vasitasiyla", "kanaliyla")
 _ORG_UNITS = (
     "departman", "birim", "ekip", "mudurluk", "mudurlugu", "mudur", "muduru",
     "direktorluk", "direktorlug", "baskanlik", "baskanlig", "daire", "koordinatorluk",
     "koordinatorlug", "koordinatorlugu", "ofis", "komite", "komisyon", "kurul", "heyet",
-    "servis", "fonksiyon", "organizasyon", "politika", "prosedur",
+    "servis", "fonksiyon", "organizasyon", "politika", "prosedur", "seflik", "sefligi",
+    "sef", "sefi",
 )
 _POSTPOSITIONS = (
     "icin", "uzere", "ait", "dair", "iliskin", "kapsaminda", "yonelik", "hakkinda",
-    "olarak", "suretiyle", "amaciyla",
+    "olarak", "suretiyle", "amaciyla", "sekilde", "bicimde",
 )
 _SALE_ASSETS = (
     "urun", "mal", "hizmet", "gayrimenkul", "tasinmaz", "varlik", "marka", "portfoy",
@@ -68,7 +70,7 @@ _SALE_ASSETS = (
 )
 _TURNOVER_METRIC = (
     "hiz", "oran", "sure", "siklik", "adet", "aded", "sayi", "miktar", "ortalama",
-    "hacim", "hacm", "deger", "tutar", "maliyet", "masraf", "ucret",
+    "hacim", "hacm", "deger", "tutar", "maliyet", "masraf", "ucret", "bedel",
 )
 _TURNOVER_FILLER = ("islem", "toplam", "ortalama", "gunluk", "aylik", "yillik")
 _ALLOWED_SALE_MODIFIERS = ("tamam", "planlan", "tum", "kismi", "belirli", "dogrudan", "dolayli", "yaklasik")
@@ -86,9 +88,10 @@ _SPLIT_OBJECT_BLOCKERS = (
 )
 _REPURCHASE_MODIFIERS = (
     "planlan", "ongorul", "duyurul", "aciklan", "belirlen", "mevcut", "olasi", "yeni",
-    "duzenli", "programlan", "ilgili", "yaklasik", "muhtemel",
+    "duzenli", "programlan", "ilgili", "yaklasik", "muhtemel", "kapsayacak", "kapsayan",
 )
 _ARTICLES_RE = re.compile(r"(?<!\w)(?:esas|ana)\s+sozlesme\w*")
+_UNVOICED = frozenset("fstkchsp")
 
 
 def normalize(value: str) -> str:
@@ -157,12 +160,23 @@ def _object_case(token: str) -> bool:
     ))
 
 
+def _modifier_like(token: str) -> bool:
+    if token in _NONFINITE_ADJUNCTS or token.startswith(_POSTPOSITIONS):
+        return True
+    if token.endswith(("ki", "daki", "deki", "taki", "teki")):
+        return True
+    if _relative(token):
+        return True
+    return token.isdigit()
+
+
 def _dative_company(token: str) -> bool:
     if not _company(token):
         return False
     if token.endswith((
         "lara", "lere", "larina", "lerine", "larimiza", "lerimize", "lariniza", "lerinize",
-        "larima", "lerime", "larina", "lerine",
+        "larima", "lerime", "miza", "mize", "muza", "muze", "niza", "nize", "nuza", "nuze",
+        "imiza", "imize", "umuza", "umuze",
     )):
         return True
     if token.startswith("sirket"):
@@ -229,7 +243,7 @@ def _legal_name_tail(items: list[str]) -> bool:
 
 
 def _legal_name_before_predicate(items: list[str]) -> bool:
-    """Bind a legal company designator to a passive predicate without consuming possessed objects."""
+    """Bind a legal company designator to a passive predicate without consuming a possessed head."""
     if _legal_name_tail(items):
         return True
     candidate_end = -1
@@ -246,9 +260,9 @@ def _legal_name_before_predicate(items: list[str]) -> bool:
             return False
         if tok.startswith(_ORG_UNITS) or _company(tok) or _transfer(tok) or _procure(tok) or _gov(tok):
             return False
-        if _object_case(tok) and tok not in _NONFINITE_ADJUNCTS:
+        if _object_case(tok) and not _modifier_like(tok):
             return False
-        if _finite(tok):
+        if _finite(tok) and not _modifier_like(tok):
             return False
     return True
 
@@ -289,6 +303,18 @@ def _relative(token: str) -> bool:
     return False
 
 
+def _past_plural_finite(token: str) -> bool:
+    for suffix in ("dilar", "diler", "dular", "duler"):
+        if token.endswith(suffix):
+            root = token[:-len(suffix)]
+            return bool(root) and root[-1] not in _UNVOICED
+    for suffix in ("tilar", "tiler", "tular", "tuler"):
+        if token.endswith(suffix):
+            root = token[:-len(suffix)]
+            return bool(root) and root[-1] in _UNVOICED
+    return False
+
+
 def _finite(token: str) -> bool:
     if not token or token in _NONFINITE_ADJUNCTS or _relative(token):
         return False
@@ -296,9 +322,11 @@ def _finite(token: str) -> bool:
         return False
     if token in {"etti", "edildi", "oldu", "olmustur", "erdi", "bitti", "iflas", "kuruldu", "kurdu", "yapildi"}:
         return True
+    if _past_plural_finite(token):
+        return True
     if len(token) >= 4 and re.search(
         r"(?:di|du|ti|tu|dim|dum|tim|tum|din|dun|tin|tun|dik|duk|tik|tuk|"
-        r"diniz|dunuz|tiniz|tunuz|dilar|diler|dular|duler|tilar|tiler|tular|tuler|"
+        r"diniz|dunuz|tiniz|tunuz|"
         r"yor|yoruz|yorsunuz|yorlar|"
         r"mis|mus|misler|muslar|mistir|mustur|"
         r"mektedir|maktadir|"
@@ -307,6 +335,8 @@ def _finite(token: str) -> bool:
     ):
         return True
     if len(token) >= 5 and re.search(r"(?:ar|er|ir|ur)(?:lar|ler)$", token) and not token.startswith(("karar", "zarar")):
+        return True
+    if len(token) >= 6 and re.search(r"(?:maz|mez)(?:lar|ler)$", token):
         return True
     if token.startswith((
         "yuksel", "dus", "acikla", "kullan", "sagla", "sonuclandir", "birles", "bolun",
@@ -386,7 +416,7 @@ def _blocked_vendor_indices(items: list[str]) -> set[int]:
     out: set[int] = set()
     for i, tok in enumerate(items):
         vendor = _source_company(tok) or _comitative_company(tok)
-        split = i + 1 < len(items) and items[i + 1] == "ile" and (
+        split = i + 1 < len(items) and items[i + 1].startswith(_VENDOR_BRIDGES) and (
             _company(tok) or tok.startswith(_VENDOR_HEADS)
         )
         if not vendor and not split:
@@ -714,9 +744,13 @@ def _bound_corporate_head(items: list[str], predicate_index: int) -> bool:
         if not items[j].startswith(_CORPORATE_HEADS):
             continue
         between = items[j + 1:predicate_index]
+        if between and between[0] in {"de", "da", "te", "ta"}:
+            return False
         if any(x.startswith(_SPLIT_OBJECT_BLOCKERS) for x in between):
             return False
-        if any(_object_case(x) and not _dative_company(x) for x in between):
+        if any(_object_case(x) and not _dative_company(x) and not _modifier_like(x) for x in between):
+            return False
+        if any(x.endswith(("lar", "ler")) and not _finite(x) and not _modifier_like(x) for x in between):
             return False
         if any(_company(x) or _transfer(x) or _procure(x) or _gov(x) for x in between):
             return False
@@ -791,7 +825,7 @@ def _devir_match(subject: str, summary: str) -> bool:
 
 
 def _repurchase_object(items: list[str], idx: int) -> str:
-    for j in range(idx - 1, max(-1, idx - 9), -1):
+    for j in range(idx - 1, max(-1, idx - 11), -1):
         t = items[j]
         if t in _COORD:
             break
@@ -827,8 +861,17 @@ def _repurchase_match(subject: str, summary: str) -> bool:
 
 def _contract_segments(value: str) -> list[str]:
     protected = str(value or "").replace("A.Ş.", "AS").replace("a.ş.", "as")
-    protected = re.sub(r"(?<=\d)\.(?=\s*[A-Za-zÇĞİÖŞÜçğıöşü])", " ", protected)
-    return [normalize(p).strip() for p in re.split(r"[,!?;:\n]+|\.(?=\s+[A-Za-zÇĞİÖŞÜçğıöşü])", protected) if normalize(p).strip()]
+    protected = re.sub(
+        r"(?<=\d)\.(?=\s*(?:madde\w*|['’]?(?:nci|nci|inci|uncu|uncu)))",
+        " ",
+        protected,
+        flags=re.IGNORECASE,
+    )
+    return [
+        normalize(p).strip()
+        for p in re.split(r"[,!?;:\n]+|\.(?=\s+)", protected)
+        if normalize(p).strip()
+    ]
 
 
 def _articles_reference(seg: str) -> bool:
