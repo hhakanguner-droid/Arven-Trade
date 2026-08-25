@@ -56,11 +56,15 @@ def _disclosure(
         ("ABC şirketini, tüm varlıklarıyla birlikte, satın aldı", ("mna", 90, "high")),
         ("Şirket ABC'yi satın aldı", ("mna", 90, "high")),
         ("Şirket XYZ'yi satın aldı", ("mna", 90, "high")),
+        ("Şirket X'i Devraldı", ("mna", 90, "high")),
         ("Makine şirket için satın alındı", ("operations", 80, "medium")),
         ("Makine şirket çalışanları için satın alındı", ("operations", 80, "medium")),
         ("ABC A.Ş. yatırımcı tarafından satın alındı", ("mna", 90, "high")),
         ("ABC A.Ş. XYZ şirketi tarafından satın alındı", ("mna", 90, "high")),
         ("Ekmek geri alım programı", ("other", 0, "low")),
+        ("Satın aldığımız ve Türkiye'de kurulmuş şirket", ("mna", 90, "high")),
+        ("Satın Alınan Elektrik Dağıtım Şirketi", ("mna", 90, "high")),
+        ("ABC A.Ş.'nin Satın Alma İhalesi", ("commercial", 85, "high")),
     ],
 )
 def test_final_exact_head_role_bindings(subject, expected):
@@ -89,3 +93,12 @@ def test_articles_subject_does_not_hide_numbered_article_of_independent_contract
         summary="Tedarik sözleşmesinin 6 sayılı maddesi tadil edildi",
     )
     assert alert_service.classify_kap_disclosure(disclosure) == ("commercial", 85, "high")
+
+
+@pytest.mark.unit
+def test_articles_subject_keeps_generic_shorthand_reference_suppressed():
+    disclosure = _disclosure(
+        "Şirket Ana Sözleşmesinin Tadili",
+        summary="Sözleşmenin ilgili maddeleri güncellenmiştir",
+    )
+    assert alert_service.classify_kap_disclosure(disclosure) == ("other", 0, "low")
