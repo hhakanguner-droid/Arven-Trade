@@ -137,6 +137,11 @@ def install(service: Any) -> None:
         "_phase10_round20_original",
         service.KapWatchlistAlertService.check_watchlist,
     )
+    disabled_check = getattr(
+        previous_check,
+        "_phase10_round19_original",
+        previous_check,
+    )
 
     def _tokens(text: str) -> list[str]:
         return service.re.findall(r"\w+", text)
@@ -445,7 +450,7 @@ def install(service: Any) -> None:
 
     def _check_watchlist(self: Any, tickers=None, *, now=None):
         if not self.enabled:
-            return previous_check(self, tickers, now=now)
+            return disabled_check(self, tickers, now=now)
         if tickers is not None:
             return previous_check(self, tickers, now=now)
 
