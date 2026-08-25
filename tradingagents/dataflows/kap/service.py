@@ -121,19 +121,22 @@ def _priority_is_actionable(priority: tuple) -> bool:
         return bool(first)
 
 
+def _priority_is_unseen(priority: tuple) -> bool:
+    """Return unseen priority only for the alert-service selector contract."""
+    return bool(priority[0]) if len(priority) >= 5 else False
+
+
 def _select_significant(
     disclosures: Iterable,
     limit: int,
     significance_key: Callable[[object], tuple] | None = None,
 ) -> list:
-    """Select a bounded mix of fresh actionable and significant disclosures.
+    """Select a bounded mix of unseen/fresh actionable and significant records.
 
-    The bounded set must satisfy two competing Phase 10 requirements:
-    older high-score records must not permanently starve newer actionable IDs,
-    and a newest score-zero record must not consume the only slot while a real
-    alert is present. Therefore the freshness quota is drawn from records with
-    positive significance first. Remaining capacity is filled by significance;
-    only when the whole window is non-actionable do we fall back to pure recency.
+    For alert polling, unseen actionable records outrank already-seen actionable
+    records inside the freshness quota. This prevents a slightly newer seen
+    disclosure from permanently consuming a tight result cap while an unseen
+    actionable disclosure remains just behind it.
     """
     items = list(disclosures)
     if not items:
@@ -148,7 +151,10 @@ def _select_significant(
 
     newest_actionable = sorted(
         actionable,
-        key=lambda pair: pair[0].publish_datetime,
+        key=lambda pair: (
+            _priority_is_unseen(pair[1]),
+            pair[0].publish_datetime,
+        ),
         reverse=True,
     )
     recent_quota = min(limit, max(1, (limit + 1) // 2))
