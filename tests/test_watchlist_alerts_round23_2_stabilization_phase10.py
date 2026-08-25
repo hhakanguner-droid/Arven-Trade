@@ -62,6 +62,43 @@ def test_round23_2_exact_codex_regressions(subject, expected):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("subject", "expected"),
+    [
+        (
+            "Devralınacak olan halka açık ve yabancı sermayeli anonim şirket",
+            ("mna", 90, "high"),
+        ),
+        ("ABC şirketinin enerji iştiraki satın alındı", ("mna", 90, "high")),
+        (
+            "Kullanım hakkı bulunan yeni tesis kiraya verildi",
+            ("operations", 80, "medium"),
+        ),
+        ("Şirket yeni makine satın aldı", ("other", 0, "low")),
+        (
+            "Şirket üretim hattı ve depoları birleştirdi",
+            ("operations", 80, "medium"),
+        ),
+        ("Ortaklığın ürün satışı", ("other", 0, "low")),
+        ("Gayrimenkul Devri", ("mna", 90, "high")),
+        ("Marka Devri", ("mna", 90, "high")),
+        ("Portföy Devri", ("mna", 90, "high")),
+        ("Fabrika Devri", ("mna", 90, "high")),
+        ("Tesis Devri", ("mna", 90, "high")),
+        ("Bedelli artırım kararı", ("capital", 95, "critical")),
+        ("Bedelsiz artırım kararı", ("capital", 95, "critical")),
+        ("Bedelli artırıma katılım", ("capital", 95, "critical")),
+        (
+            "Tahvil ihracı ve pay geri alım programı",
+            ("ownership", 90, "high"),
+        ),
+    ],
+)
+def test_round23_2_latest_exact_head_regressions(subject, expected):
+    assert alert_service.classify_kap_disclosure(_disclosure(subject)) == expected
+
+
+@pytest.mark.unit
 def test_articles_suppression_is_local_to_articles_segment():
     disclosure = _disclosure(
         "Esas Sözleşme Tadili",
