@@ -3,8 +3,8 @@
 The implementation accumulated through Codex Round 14 lives in
 ``phase10_hardening_base``.  This module remains the single stable entry point:
 every explicit ``install`` reconstructs the deterministic
-base -> Round 15 -> Round 16 -> Round 17 -> Round 18 chain whenever any loaded
-installer module or installed closure has changed.
+base -> Round 15 -> Round 16 -> Round 17 -> Round 18 -> Round 19 chain whenever
+any loaded installer module or installed closure has changed.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from typing import Any
 
 from .phase10_hardening_base import install as _install_base
 
-_ROUND18_VERSION = "phase10-round18"
+_ROUND19_VERSION = "phase10-round19"
 _FOLLOWUP_FUNCTIONS = (
     "_satin_alma_is_acquisition",
     "_devralma_has_acquisition_context",
@@ -23,28 +23,28 @@ _FOLLOWUP_FUNCTIONS = (
 
 
 def _current_installers():
-    # Import modules lazily so reloads are visible through their current install
-    # function objects rather than through stale aliases captured at import time.
     from . import round15_hardening
     from . import round16_hardening
     from . import round17_hardening
     from . import round18_hardening
+    from . import round19_hardening
 
     return (
         round15_hardening.install,
         round16_hardening.install,
         round17_hardening.install,
         round18_hardening.install,
+        round19_hardening.install,
     )
 
 
-def _round18_ready(service: Any) -> bool:
-    from . import round18_hardening
+def _round19_ready(service: Any) -> bool:
+    from . import round19_hardening
 
-    generation = round18_hardening.INSTALL_GENERATION
+    generation = round19_hardening.INSTALL_GENERATION
     wrappers_ready = (
         all(
-            getattr(getattr(service, name, None), "_phase10_round18_generation", None)
+            getattr(getattr(service, name, None), "_phase10_round19_generation", None)
             is generation
             for name in (
                 "_satin_alma_is_acquisition",
@@ -54,7 +54,7 @@ def _round18_ready(service: Any) -> bool:
         )
         and getattr(
             getattr(service.KapWatchlistAlertService, "check_watchlist", None),
-            "_phase10_round18_generation",
+            "_phase10_round19_generation",
             None,
         )
         is generation
@@ -72,11 +72,13 @@ def _round18_ready(service: Any) -> bool:
 
 
 def _unwrap_followups(function: Any) -> Any:
-    """Return the pre-follow-up function without stacking stale wrappers."""
     current = function
     seen: set[int] = set()
     while id(current) not in seen:
         seen.add(id(current))
+        if hasattr(current, "_phase10_round19_original"):
+            current = current._phase10_round19_original
+            continue
         if hasattr(current, "_phase10_round18_original"):
             current = current._phase10_round18_original
             continue
@@ -101,16 +103,14 @@ def _reset_followup_layers(service: Any) -> None:
 
     current_check = getattr(service.KapWatchlistAlertService, "check_watchlist", None)
     if current_check is not None:
-        service.KapWatchlistAlertService.check_watchlist = _unwrap_followups(current_check)
+        service.KapWatchlistAlertService.check_watchlist = _unwrap_followups(
+            current_check
+        )
 
 
 def _set_compatibility_markers(service: Any) -> None:
-    """Expose superseded-round markers on the current outer wrappers.
+    from . import round17_hardening
 
-    Older regression tests and diagnostics intentionally assert that the complete
-    Phase 10 chain still contains Rounds 15-17.  Round 18 supersedes their outer
-    closures, so carry those version markers forward without changing behavior.
-    """
     functions = [
         getattr(service, "_satin_alma_is_acquisition", None),
         getattr(service, "_devralma_has_acquisition_context", None),
@@ -123,40 +123,54 @@ def _set_compatibility_markers(service: Any) -> None:
         function._phase10_round15_version = "phase10-round15"
         function._phase10_round16_version = "phase10-round16"
         function._phase10_round17_version = "phase10-round17"
+        function._phase10_round17_generation = round17_hardening.INSTALL_GENERATION
 
 
 def install(service: Any) -> None:
     """Install every Phase 10 hardening layer in deterministic order."""
-    if _round18_ready(service):
+    if _round19_ready(service):
         _set_compatibility_markers(service)
-        service._PHASE10_HARDENING_CHAIN_INSTALLED = _ROUND18_VERSION
+        service._PHASE10_HARDENING_CHAIN_INSTALLED = _ROUND19_VERSION
         return
 
-    # A partial hot reload can leave old follow-up wrappers around only some
-    # functions. Remove them before rebuilding so no stale closure or wrapper
-    # stack survives a module update.
-    _reset_followup_layers(service)
-    _install_base(service)
-
-    install_round15, install_round16, install_round17, install_round18 = (
-        _current_installers()
+    previous_rebuild_flag = getattr(
+        service, "_PHASE10_HARDENING_REBUILD_IN_PROGRESS", None
     )
-    install_round15(service)
-    install_round16(service)
-    install_round17(service)
-    install_round18(service)
+    service._PHASE10_HARDENING_REBUILD_IN_PROGRESS = True
+    try:
+        _reset_followup_layers(service)
+        _install_base(service)
 
-    service._PHASE10_HARDENING_INSTALLER_IDENTITIES = (
-        install_round15,
-        install_round16,
-        install_round17,
-        install_round18,
-    )
-    _set_compatibility_markers(service)
-    service._PHASE10_HARDENING_CHAIN_INSTALLED = _ROUND18_VERSION
+        (
+            install_round15,
+            install_round16,
+            install_round17,
+            install_round18,
+            install_round19,
+        ) = _current_installers()
+        install_round15(service)
+        install_round16(service)
+        install_round17(service)
+        install_round18(service)
+        install_round19(service)
+
+        service._PHASE10_HARDENING_INSTALLER_IDENTITIES = (
+            install_round15,
+            install_round16,
+            install_round17,
+            install_round18,
+            install_round19,
+        )
+        _set_compatibility_markers(service)
+        service._PHASE10_HARDENING_CHAIN_INSTALLED = _ROUND19_VERSION
+    finally:
+        if previous_rebuild_flag is None:
+            try:
+                delattr(service, "_PHASE10_HARDENING_REBUILD_IN_PROGRESS")
+            except AttributeError:
+                pass
+        else:
+            service._PHASE10_HARDENING_REBUILD_IN_PROGRESS = previous_rebuild_flag
 
 
-# Round 15 predates the stable orchestrator and contains a compatibility shim
-# that wraps ``phase10_hardening.install`` unless this marker is present. Keep
-# the public stable entry point protected from that legacy mutation.
 install._phase10_round15_chain = True
