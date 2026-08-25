@@ -50,12 +50,13 @@ _FINITE_STEMS = (
     "aldi", "alacak", "aliyor", "alir", "almis",
     "devraldi", "devralacak", "devralir", "devralmis",
     "yuksel", "dus", "acikla", "kullan", "sagla", "sonuclandir",
-    "birles", "bolun", "devret", "devred", "kurul", "satil", "kiralan",
-    "feshed", "imzalan", "tamamlan", "artti", "azal", "yayinlan", "duyurul",
+    "birles", "bolun", "devret", "devred", "kurul", "kurdu", "satil", "kiralan",
+    "feshed", "imzalan", "tamamlan", "artti", "artiril", "azal", "yayinlan", "duyurul",
+    "yenilen",
 )
 _PARTICIPLE_PREFIXES = (
     "alinan", "alinacak", "alinmis", "devralinan", "devralinacak",
-    "devralinmis", "olan", "oldugu",
+    "devralinmis", "olan", "oldugu", "kurulu",
 )
 _RIGHT_RELATION_BLOCKERS = (
     "bulunan", "mevcut", "kapsamindaki", "uzerindeki", "konu", "sahip",
@@ -93,15 +94,26 @@ def _looks_finite(token: str) -> bool:
 
 
 def _has_finite_predicate(items: list[str]) -> bool:
-    return any(_looks_finite(item) for item in items)
+    for index, item in enumerate(items):
+        if (
+            item.startswith(("alacak", "devralacak"))
+            and index + 1 < len(items)
+            and items[index + 1].startswith(("oldug", "olan"))
+        ):
+            continue
+        if item.startswith("kurulu"):
+            continue
+        if _looks_finite(item):
+            return True
+    return False
 
 
 def _split_coordinated_items(items: list[str]) -> list[list[str]]:
     """Split only coordinators that join two predicate-bearing clauses.
 
-    This keeps modifier lists such as "halka açık ve yabancı sermayeli şirket"
-    and compound objects such as "üretim hattı ve depoları birleştirdi" intact,
-    while separating "satın aldı ve ... yükseldi".
+    This keeps modifier lists such as "halka açık ve yabancı sermayeli şirket",
+    relative noun phrases, and compound objects intact, while separating two
+    independent finite clauses.
     """
     out: list[list[str]] = []
     start = 0
@@ -198,15 +210,26 @@ def _proper_accusative(items: list[str]) -> bool:
     return False
 
 
+def _company_agent_indices(items: list[str]) -> set[int]:
+    out: set[int] = set()
+    for index, item in enumerate(items[:-1]):
+        if _company_token(item) and items[index + 1].startswith("tarafindan"):
+            out.add(index)
+            out.add(index + 1)
+    return out
+
+
 def _explicit_transfer_object(items: list[str]) -> bool:
     if _proper_accusative(items):
         return True
+    agent = _company_agent_indices(items)
     return any(
-        _transfer_token(item)
+        index not in agent
+        and _transfer_token(item)
         and _object_inflected(item)
         and not _speaker_company(item)
         and not _genitive_company(item)
-        for item in items
+        for index, item in enumerate(items)
     )
 
 
@@ -230,15 +253,6 @@ def _producer_company_phrase(items: list[str]) -> bool:
             if relation and _company_token(candidate):
                 return not _speaker_company(candidate) and not _company_locative(candidate)
     return False
-
-
-def _company_agent_indices(items: list[str]) -> set[int]:
-    out: set[int] = set()
-    for index, item in enumerate(items[:-1]):
-        if _company_token(item) and items[index + 1].startswith("tarafindan"):
-            out.add(index)
-            out.add(index + 1)
-    return out
 
 
 def _procurement_before_purchase(items: list[str]) -> bool:
@@ -284,6 +298,15 @@ def _nominal_pre_target(before: list[str], after: list[str]) -> bool:
         return True
     if any(_procurement_token(item) for item in before):
         return False
+
+    # A nominative company before "satın alma" can be the actor/department
+    # owner rather than the acquisition target.  A following finite predicate
+    # or department/unit head is strong evidence for that actor reading.
+    if any(item.startswith(("departman", "birim", "ekip")) for item in after):
+        return False
+    if _has_finite_predicate(after):
+        return False
+
     return any(
         (_company_token(item) or _transfer_token(item))
         and not _speaker_company(item)
@@ -346,7 +369,6 @@ def _passive_pre_target(before: list[str]) -> bool:
     if not before:
         return False
 
-    # Strong grammatical evidence must win before procurement/possessor guards.
     if _explicit_transfer_object(before):
         return True
     if _producer_company_phrase(before):
@@ -456,8 +478,9 @@ def _governance_object(items: list[str]) -> bool:
 def _devralma_transfer_object(items: list[str]) -> bool:
     board = _board_decision_span(items)
     adjunct = _adjunct_span(items)
+    agent = _company_agent_indices(items)
     for index, item in enumerate(items):
-        if index in board or index in adjunct:
+        if index in board or index in adjunct or index in agent:
             continue
         if (
             _transfer_token(item)
@@ -482,7 +505,13 @@ def _passive_devralma_target(before: list[str], after: list[str]) -> bool:
             return False
         return False
 
-    if any(_company_token(item) and not _speaker_company(item) for item in before):
+    agent_before = _company_agent_indices(before)
+    if any(
+        _company_token(item)
+        and index not in agent_before
+        and not _speaker_company(item)
+        for index, item in enumerate(before)
+    ):
         return True
 
     if _procurement_before_purchase(after):
@@ -536,22 +565,17 @@ def _right_noun(token: str) -> bool:
 
 
 def _legal_tesis_clause(items: list[str], tesis_index: int) -> bool:
-    # Passive-relative order: "Tesis edilen kullanım hakkı".
     tail = items[tesis_index + 1 : tesis_index + 8]
     if tail and tail[0].startswith(("edil", "olustur")):
         if any(_right_noun(token) for token in tail[1:]):
             return True
 
-    # A physical facility head immediately governs "tesis".
     if tesis_index > 0 and _has_prefix(items[tesis_index - 1], _PHYSICAL_HEAD_PREFIXES):
         return False
 
-    # Governance-object usage: "tesis yönetimini devraldı".
     if any(_governance_token(token) for token in items[tesis_index + 1 : tesis_index + 3]):
         return False
 
-    # Backward right-creation syntax: "hakkının ... tesisi".  Relational
-    # participles indicate an existing right governing a physical facility.
     for right_index in range(tesis_index - 1, -1, -1):
         token = items[right_index]
         if not _right_noun(token):
@@ -568,8 +592,10 @@ def _legal_tesis_clause(items: list[str], tesis_index: int) -> bool:
 
 def tesis_is_operational(text: str) -> bool:
     found = False
-    for sentence in _raw_sentences(text):
-        items = re.findall(r"\w+", sentence)
+    # Use the same finite-clause boundaries as acquisition grammar so a right
+    # in one coordinated clause cannot suppress a later physical facility.
+    for clause in _clauses(text):
+        items = re.findall(r"\w+", clause)
         for index, item in enumerate(items):
             if not item.startswith("tesis"):
                 continue
@@ -592,16 +618,25 @@ def _segment_legal_tesis(segment: str) -> bool:
 
 def _capital_price_matches(subject: str, summary: str, term: str) -> bool:
     needle = normalize(term)
-    for segment in _base.segments(subject, summary):
-        items = re.findall(r"\w+", segment)
-        if not any(item.startswith(needle) for item in items):
+    for clause in _clauses(f"{subject}. {summary}"):
+        items = re.findall(r"\w+", clause)
+        price_positions = [
+            index for index, item in enumerate(items) if item.startswith(needle)
+        ]
+        if not price_positions:
             continue
-        if _segment_legal_tesis(segment):
+        if _segment_legal_tesis(clause):
             continue
         if any(item.startswith(("sermaye", "pay", "hisse")) for item in items):
             return True
-        if any(item.startswith("artir") for item in items):
-            return True
+        # Shorthand KAP headings such as "Bedelli artırım kararı" are valid,
+        # but an unrelated later price increase must not bind to "bedelsiz".
+        for index in price_positions:
+            if any(
+                item.startswith("artir")
+                for item in items[index + 1 : min(len(items), index + 4)]
+            ):
+                return True
     return False
 
 
@@ -648,6 +683,12 @@ def _split_is_corporate(subject: str, summary: str) -> bool:
 
 
 def _operational_merger_object(items: list[str], index: int) -> bool:
+    # "birleşme" is an event noun; a preceding plural facility noun can be
+    # incidental ("Şirketlerin depoları birleşme sonrasında...").  Operational
+    # objects suppress M&A only for causative combine forms.
+    if items[index].startswith("birlesme"):
+        return False
+
     before = items[max(0, index - 8) : index]
     for token in before:
         if not _has_prefix(token, _OPERATIONAL_OBJECT_PREFIXES):
@@ -690,6 +731,16 @@ def _devir_is_acquisition(subject: str, summary: str) -> bool:
             if not item.startswith(("devir", "devri", "devred", "devret")):
                 continue
 
+            # Accounting/operational turnover-rate constructions are not asset
+            # transfers (e.g. "Portföy devir hızı").
+            if index + 1 < len(items):
+                rate = items[index + 1]
+                if (
+                    (rate.startswith("hiz") and not rate.startswith("hizmet"))
+                    or rate.startswith(("oran", "sure", "siklik"))
+                ):
+                    continue
+
             nearby = items[max(0, index - 7) : index + 8]
             if any(token.startswith(("motor", "rpm", "donus")) for token in nearby) and any(
                 token.startswith(("hiz", "devir")) for token in nearby
@@ -710,7 +761,6 @@ def _devir_is_acquisition(subject: str, summary: str) -> bool:
             if any(_company_token(token) and not _speaker_company(token) for token in after):
                 return True
 
-            # Nominal transfer heading: "Gayrimenkul/Marka/Portföy/Fabrika/Tesis Devri".
             if index > 0 and _transfer_token(items[index - 1]) and not _genitive_company(items[index - 1]):
                 return True
 
@@ -733,17 +783,22 @@ def _share_repurchase(subject: str, summary: str) -> bool:
         for index in range(len(items) - 1):
             if items[index] != "geri" or not items[index + 1].startswith("al"):
                 continue
-            nearby = items[max(0, index - 6) : index + 9]
 
-            # Explicit share syntax outranks unrelated debt/product mentions.
-            if any(item.startswith(("pay", "hisse")) for item in nearby):
+            previous = items[index - 1] if index > 0 else ""
+            tail = items[index + 2 : index + 6]
+
+            # Bind the event to the grammatical object immediately preceding
+            # "geri alım" rather than any pay/product/debt noun in a wide window.
+            if previous.startswith(("pay", "hisse")):
                 return True
+            if _has_prefix(previous, _DEBT_PREFIXES) or _has_prefix(previous, _PRODUCT_PREFIXES):
+                continue
+            if _procurement_token(previous):
+                continue
+            if _transfer_token(previous) and not _company_token(previous):
+                continue
 
-            if any(_has_prefix(item, _DEBT_PREFIXES) for item in nearby):
-                continue
-            if any(_has_prefix(item, _PRODUCT_PREFIXES) for item in nearby):
-                continue
-            if any(item.startswith("program") for item in nearby):
+            if any(item.startswith("program") for item in tail):
                 return True
     return False
 
@@ -767,7 +822,15 @@ def _contract_matches(subject: str, summary: str) -> bool:
             if _ARTICLES_RE.search(segment):
                 continue
             items = re.findall(r"\w+", segment)
-            if articles_subject and any(item.startswith(("madde", "tadil")) for item in items):
+            # Suppress only a generic articles-of-association article reference,
+            # not an independent commercial agreement that also happens to be
+            # amended/terminated.
+            if (
+                articles_subject
+                and items
+                and items[0].startswith("sozlesme")
+                and any(item.startswith("madde") for item in items[1:])
+            ):
                 continue
             return True
     return False
@@ -785,11 +848,19 @@ def _ownership_ortaklik_matches(subject: str, summary: str) -> bool:
         ):
             return True
 
-        for index, item in enumerate(items[:-1]):
+        for index, item in enumerate(items):
             if not item.startswith("ortakligin"):
                 continue
-            sale = items[index + 1]
-            if sale.startswith(("satisi", "satilmas")):
+            for sale_index in range(index + 1, min(len(items), index + 5)):
+                sale = items[sale_index]
+                if not sale.startswith(("satisi", "satilmas")):
+                    continue
+                modifiers = items[index + 1 : sale_index]
+                if any(
+                    _procurement_token(token) or _has_prefix(token, _PRODUCT_PREFIXES)
+                    for token in modifiers
+                ):
+                    break
                 return True
     return False
 
@@ -825,19 +896,25 @@ def _procurement_operation(subject: str, summary: str) -> bool:
     if not any(_procurement_token(item) for item in all_tokens):
         return False
 
-    passive_or_relative_purchase = False
+    qualifying_purchase = False
     for clause in _clauses(text):
         items = re.findall(r"\w+", clause)
         for index in range(len(items) - 1):
             if items[index] != "satin" or not items[index + 1].startswith("al"):
                 continue
-            kind = _purchase_kind(items[index + 1], items[index + 2 :])
+            before = items[:index]
+            after = items[index + 2 :]
+            kind = _purchase_kind(items[index + 1], after)
             if kind in {"passive", "active_relative"}:
-                passive_or_relative_purchase = True
+                qualifying_purchase = True
+            elif kind == "active_nominal" and any(
+                _procurement_token(token) for token in before + after
+            ):
+                qualifying_purchase = True
 
     passive_takeover_present = any(item.startswith("devralin") for item in all_tokens)
 
-    if passive_or_relative_purchase and not satin_alma_is_acquisition(text):
+    if qualifying_purchase and not satin_alma_is_acquisition(text):
         return True
     if passive_takeover_present and not devralma_has_acquisition_context(text):
         return True
