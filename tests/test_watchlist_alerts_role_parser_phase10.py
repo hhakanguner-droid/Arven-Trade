@@ -199,3 +199,31 @@ def test_articles_reference_does_not_cross_a_finished_contract_clause():
         "Tedarik sözleşmesi imzalandı ve 6 sayılı maddesi tadil edildi",
     )
     assert alert_service.classify_kap_disclosure(disclosure) == ("commercial", 85, "high")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("subject", "expected"),
+    [
+        ("ABC A.Ş. önceki yıl satın alındı", ("mna", 90, "high")),
+        ("ABC Holding'de yatırımcılar bölündü", ("other", 0, "low")),
+        ("Devraldı başarılı toplantılar sonrasında ABC şirketini", ("mna", 90, "high")),
+        ("Ürünü kapsayacak şekilde planlanan geri alım programı", ("other", 0, "low")),
+        ("ABC Enerji A.Ş.'nin satın alma şefliği", ("other", 0, "low")),
+        ("ABC şirketi ihalede satın aldı ve teknoloji firması toplantıda beklemezler", ("commercial", 85, "high")),
+        ("Dosyalar firmamıza devredildi", ("other", 0, "low")),
+        ("Makine ABC firmasının çözüm ortağı üzerinden satın alındı", ("operations", 80, "medium")),
+        ("Portföy devir işlem bedeli arttı", ("other", 0, "low")),
+    ],
+)
+def test_role_parser_closes_b93_exact_head_findings(subject, expected):
+    assert alert_service.classify_kap_disclosure(_disclosure(subject)) == expected
+
+
+@pytest.mark.unit
+def test_articles_reference_stays_in_its_sentence_before_digit_started_sentence():
+    disclosure = _disclosure(
+        "Esas Sözleşme Tadili",
+        "Tedarik sözleşmesi mevcut. 6 sayılı maddesi tadil edildi",
+    )
+    assert alert_service.classify_kap_disclosure(disclosure) == ("commercial", 85, "high")
