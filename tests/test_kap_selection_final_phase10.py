@@ -58,3 +58,22 @@ def test_all_zero_score_window_falls_back_to_newest_record():
     )
 
     assert [item.name for item in selected] == ["newest"]
+
+
+@pytest.mark.unit
+def test_real_alert_priority_tuple_uses_important_field_not_unseen_flag():
+    newest_zero = _item("newest-zero", 0)
+    actionable = _item("actionable-90", 1)
+
+    def priority(item):
+        if item.name == "newest-zero":
+            return (1, 0, 0, item.publish_datetime, 0)
+        return (1, 1, 90, item.publish_datetime, 90)
+
+    selected = _select_significant(
+        [newest_zero, actionable],
+        1,
+        priority,
+    )
+
+    assert [item.name for item in selected] == ["actionable-90"]
