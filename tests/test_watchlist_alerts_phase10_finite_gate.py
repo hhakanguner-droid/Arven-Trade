@@ -40,6 +40,17 @@ def _d(subject: str, summary: str = "") -> KapDisclosure:
         ("ABC A.S. XYZ sirketi tarafindan satin alindi", "", ("mna", 90, "high")),
         ("ABC Ltd. Sti. XYZ sirketi tarafindan satin alindi", "", ("mna", 90, "high")),
         ("ABC Şirketi'nin Yeni Satın Alma İhalesi", "", ("commercial", 85, "high")),
+        # Final exact-head review regressions.
+        ("Şirketin satın aldığı makineler ve satın aldığı bağlı ortaklık", "", ("mna", 90, "high")),
+        ("Satın aldığımız bilgisayarın kurulduğu şirketle iş ilişkisi", "", ("commercial", 80, "medium")),
+        ("Şirket gıda geri alım programı başlattı", "", ("other", 0, "low")),
+        ("Ortaklığımızın Ana Sözleşmesinin ilgili maddeleri güncellendi", "", ("other", 0, "low")),
+        ("Sözleşmenin 6. maddesi tadil edilmiştir", "", ("other", 0, "low")),
+        ("Satın Alma: ABC Şirketi", "", ("mna", 90, "high")),
+        ("Devralma: ABC Şirketi", "", ("mna", 90, "high")),
+        ("Şirket X'i satın aldı", "", ("mna", 90, "high")),
+        ("Şirket X'i satın alacak", "", ("mna", 90, "high")),
+        ("Şirket X'i satın alıyor", "", ("mna", 90, "high")),
     ],
 )
 def test_phase10_finite_closeout_gate(subject, summary, expected):
