@@ -25,7 +25,16 @@ def tokens(value: str) -> list[str]:
 
 
 def segments(*values: str) -> list[str]:
-    return _engine.segments(*values)
+    protected: list[str] = []
+    for value in values:
+        text = str(value or "")
+        # The role parser already protects Turkish legal designators. Protect
+        # their ASCII spellings too so clause splitting does not turn
+        # ``ABC Ltd. Sti.`` or ``ABC A.S.`` into unrelated fragments.
+        text = re.sub(r"\bA\.S\.", "AS", text, flags=re.IGNORECASE)
+        text = re.sub(r"\bLtd\.\s+Sti\.", "Ltd Sti", text, flags=re.IGNORECASE)
+        protected.append(text)
+    return _engine.segments(*protected)
 
 
 def _legal_designator_pattern() -> str:
@@ -37,6 +46,15 @@ def _purchase_guard_clause(value: str) -> bool | None:
     if not text.strip():
         return None
     legal = _legal_designator_pattern()
+
+    # Explicit accusative company objects are acquisitions. This positive must
+    # be clause-local so an earlier procurement clause cannot suppress a later
+    # ``ABC şirketini satın aldı`` sentence.
+    if re.search(
+        r"\b(?:sirketini|firmayi|ortakligi|isletmeyi)\s+satin\s+al\w*",
+        text,
+    ):
+        return True
 
     # A beneficiary introduced by ``için`` is not the passive acquisition
     # target when an explicit procurement object precedes that phrase.
@@ -72,9 +90,8 @@ def _purchase_guard_clause(value: str) -> bool | None:
 
     # Compatibility positive: ``Satın aldığımız ... kurulmuş şirket`` is an
     # acquisition only when the company head is directly governed by the
-    # purchase relative clause. A genitive object such as ``sunucunun`` or
-    # ``makinenin`` before a later ``kurulduğu şirket`` proves that the earlier
-    # noun, not the company, was purchased.
+    # purchase relative clause. Known purchased-object heads prove that the
+    # earlier noun, not the later company, was purchased.
     rel = re.search(
         r"\bsatin\s+aldig\w*(?P<middle>(?:\s+\S+){0,8})\s+"
         r"(?:sirket|firma|ortaklik|isletme)\w*\b",
@@ -82,9 +99,10 @@ def _purchase_guard_clause(value: str) -> bool | None:
     )
     if rel:
         middle = rel.group("middle")
-        if re.search(r"\b\w+(?:nin|nun|in|un)\b(?:\s+\w+){0,4}\s+kurul\w*", middle):
-            return False
-        if re.search(r"\b(?:makine|ekipman|hammadde|malzeme|urun|yazilim|elektrik|enerji)\w*", middle):
+        if re.search(
+            r"\b(?:sunucu|makine|ekipman|hammadde|malzeme|urun|yazilim|elektrik|enerji)\w*",
+            middle,
+        ):
             return False
         if re.search(r"\bkurul\w*\b", middle):
             return True
@@ -144,10 +162,13 @@ def _repurchase_guard_clause(value: str) -> bool | None:
         return None
     if re.search(r"\b(?:pay|hisse)\w*\s+geri\s+alim\w*", text):
         return True
-    if re.search(r"\b(?:sirket|ortaklik)\w*(?:\s+\w+){0,3}\s+geri\s+alim\w*\s+program\w*", text):
-        return True
+    # Product recall/re-purchase language is authoritative before the generic
+    # company-program positive; otherwise ``Şirket ürün geri alım programı``
+    # is incorrectly promoted to ownership.
     if re.search(r"\b(?:ekmek|yemek|urun|malzeme|makine|ekipman)\w*\s+geri\s+alim\w*", text):
         return False
+    if re.search(r"\b(?:sirket|ortaklik)\w*(?:\s+\w+){0,3}\s+geri\s+alim\w*\s+program\w*", text):
+        return True
     return None
 
 
@@ -169,19 +190,23 @@ def _final_repurchase_guard(subject: str, summary: str) -> bool | None:
     return None
 
 
+def _company_article_qualifier(token: str) -> bool:
+    return token.startswith(("sirket", "ortaklik", "firma", "isletme"))
+
+
 def _named_commercial_contract(text: str) -> bool:
     normalized = normalize(text)
     # Directly named contracts such as ``Franchise Sözleşmesi``.
     for match in re.finditer(r"\b([a-z0-9]+)\w*\s+sozlesme\w*", normalized):
         descriptor = match.group(1)
-        if descriptor not in {"esas", "ana", "sirket", "ortaklik"}:
+        if descriptor not in {"esas", "ana"} and not _company_article_qualifier(descriptor):
             return True
     # Master-contract names such as ``Franchise Ana Sözleşmesi`` are still
     # independent commercial contracts; ``Ana`` belongs to that contract name,
     # not to the company's articles of association.
     for match in re.finditer(r"\b([a-z0-9]+)\w*\s+(?:ana|esas)\s+sozlesme\w*", normalized):
         qualifier = match.group(1)
-        if qualifier not in {"sirket", "ortaklik", "esas", "ana"}:
+        if qualifier not in {"esas", "ana"} and not _company_article_qualifier(qualifier):
             return True
     return False
 
