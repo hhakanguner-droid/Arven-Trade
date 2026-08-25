@@ -110,6 +110,7 @@ def test_role_parser_preserves_prior_regression_contract(subject, expected):
         ("Sözleşmenin tedarik maddesi 2 kez tadil edildi", ("commercial", 85, "high")),
         ("Sözleşmenin 6'ncı maddesi tadil edilmiştir", ("other", 0, "low")),
         ("Sözleşmenin 6 sayılı maddesi tadil edilmiştir", ("other", 0, "low")),
+        ("Sözleşmenin tadil edilen 6 sayılı maddesi", ("other", 0, "low")),
     ],
 )
 def test_articles_reference_is_structural_not_clause_wide(summary, expected):
@@ -139,4 +140,34 @@ def test_articles_reference_is_structural_not_clause_wide(summary, expected):
     ],
 )
 def test_role_parser_latest_exact_head_closure(subject, expected):
+    assert alert_service.classify_kap_disclosure(_disclosure(subject)) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("subject", "expected"),
+    [
+        ("Devraldı dün ABC şirketini", ("mna", 90, "high")),
+        ("ABC A.Ş. geçen yıl satın alındı", ("mna", 90, "high")),
+        ("ABC A.Ş. hızla satın alındı", ("mna", 90, "high")),
+        ("ABC şirketi ihalede satın aldı ve teknoloji firması toplantıda konuşurlar", ("commercial", 85, "high")),
+        ("ABC Holding üçe bölündü", ("mna", 90, "high")),
+        ("ABC Grup yeniden bölündü", ("mna", 90, "high")),
+        ("Dosyalar firmalara devredildi", ("other", 0, "low")),
+        ("Dosyalar ortaklıklara devredildi", ("other", 0, "low")),
+        ("Makine ABC şirketinin yatırım bankası vasıtası ile satın alındı", ("operations", 80, "medium")),
+        ("Holding Satın Alımı", ("mna", 90, "high")),
+        ("Grup Satın Alımı", ("mna", 90, "high")),
+        ("Kullandığı yöntemle satın aldığı ve hizmet sağladığı şirket", ("mna", 90, "high")),
+        ("Ürüne yönelik planlanan geri alım programı", ("other", 0, "low")),
+        ("ABC Enerji A.Ş.'nin satın alma başkanlığı", ("other", 0, "low")),
+        ("ABC Enerji A.Ş.'nin satın alma dairesi", ("other", 0, "low")),
+        ("ABC Enerji A.Ş.'nin satın alma koordinatörlüğü", ("other", 0, "low")),
+        ("ABC Enerji A.Ş.'nin satın alma müdürü", ("other", 0, "low")),
+        ("Portföy devir işlem hacmi arttı", ("other", 0, "low")),
+        ("Portföy devir işlem değeri arttı", ("other", 0, "low")),
+        ("Makine ABC firmasının iştirakiyle satın alınacaktır", ("operations", 80, "medium")),
+    ],
+)
+def test_role_parser_closes_70b603_exact_head_findings(subject, expected):
     assert alert_service.classify_kap_disclosure(_disclosure(subject)) == expected
