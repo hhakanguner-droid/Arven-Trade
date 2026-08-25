@@ -105,15 +105,30 @@ def _select_significant(
     limit: int,
     significance_key: Callable[[object], tuple[int, datetime]] | None = None,
 ) -> list:
-    """Select disclosures with an optional caller-specific importance ranking.
+    """Select a bounded mix of newest and most significant disclosures.
 
-    The default keeps the KAP analyst's historic ranking. Alert consumers can
-    provide their own deterministic ranking so critical events are not removed
-    by an unrelated pre-selection rule before alert classification runs.
+    A pure significance-first cap can permanently hide a newer, slightly
+    lower-scoring disclosure behind an older record that remains inside the
+    lookback window. Reserve at least half of the bounded result for the newest
+    records, then fill the remaining slots by significance. This keeps analyst
+    relevance while ensuring fresh disclosure IDs can enter alert dedup state.
     """
+    items = list(disclosures)
+    if not items:
+        return []
+
     key = significance_key or _significance
-    ranked = sorted(disclosures, key=key, reverse=True)[:limit]
-    return sorted(ranked, key=lambda item: item.publish_datetime, reverse=True)
+    newest = sorted(items, key=lambda item: item.publish_datetime, reverse=True)
+    newest_quota = min(limit, max(1, (limit + 1) // 2))
+    selected = newest[:newest_quota]
+    selected_identity = {id(item) for item in selected}
+
+    if len(selected) < limit:
+        remaining = [item for item in items if id(item) not in selected_identity]
+        ranked = sorted(remaining, key=key, reverse=True)
+        selected.extend(ranked[: limit - len(selected)])
+
+    return sorted(selected, key=lambda item: item.publish_datetime, reverse=True)
 
 
 class KapService:
