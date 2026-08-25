@@ -47,8 +47,6 @@ def _is_procurement_token(token: str) -> bool:
 
 
 def _is_product_repurchase_token(token: str) -> bool:
-    # Preserve the facade's established food/recall negatives in addition to
-    # the role parser's authoritative product vocabulary.
     if token.startswith(("ekmek", "yemek")):
         return True
     prefixes = getattr(_engine, "_PRODUCT", ())
@@ -65,18 +63,26 @@ def _contains_product_repurchase_object(value: str) -> bool:
 
 def _explicit_purchase_target(value: str) -> bool:
     text = normalize(value)
-    return bool(
-        re.search(
-            r"\b(?:sirketini|firmayi|firmasini|ortakligi|isletmeyi|istiraki|istirakini|"
-            r"payi|paylari|hisseyi|hisseleri|varligi|varliklari)\s+satin\s+al\w*",
-            text,
-        )
-        or re.search(
-            r"\bsatin\s+aldig\w*(?:\s+\w+){0,4}\s+"
-            r"(?:bagli\s+)?(?:ortaklik|istirak|sirket|firma|isletme)\w*\b",
-            text,
-        )
+    if re.search(
+        r"\b(?:sirketini|firmayi|firmasini|ortakligi|isletmeyi|istiraki|istirakini|"
+        r"payi|paylari|hisseyi|hisseleri|varligi|varliklari)\s+satin\s+al\w*",
+        text,
+    ):
+        return True
+
+    relative = re.search(
+        r"\bsatin\s+aldig\w*(?P<middle>(?:\s+\w+){0,4})\s+"
+        r"(?:bagli\s+)?(?:ortaklik|istirak|sirket|firma|isletme)\w*\b",
+        text,
     )
+    if not relative:
+        return False
+    # A procurement noun governed by the relative purchase predicate proves
+    # that the later company is merely the location/relationship head, not the
+    # purchased object (e.g. sunucunun/bilgisayarın kurulduğu şirketle...).
+    if _contains_procurement_object(relative.group("middle")):
+        return False
+    return True
 
 
 def _purchase_guard_clause(value: str) -> bool | None:
@@ -341,8 +347,6 @@ def classify_event_fields(
         if matched_terms:
             category, score = candidate, weight
 
-    # Commercial wins an equal score-80 tie for the established iş ilişkisi
-    # contract; genuinely higher-scored events remain untouched.
     if business_relationship and score <= 80:
         category, score = "commercial", 80
 
