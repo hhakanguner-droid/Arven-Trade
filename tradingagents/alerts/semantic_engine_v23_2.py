@@ -32,7 +32,7 @@ def _legal_designator_pattern() -> str:
     return r"(?:a\.?s\.?|ltd\.?\s+sti\.?)"
 
 
-def _purchase_guard_single(value: str) -> bool | None:
+def _purchase_guard_clause(value: str) -> bool | None:
     text = normalize(value)
     if not text.strip():
         return None
@@ -48,13 +48,14 @@ def _purchase_guard_single(value: str) -> bool | None:
         return False
 
     # Procurement headings owned by a company are buyer-owned procurement,
-    # not acquisitions. Cover legal names and ordinary possessive company heads.
+    # not acquisitions. Allow a small bounded modifier span (e.g. ``Yeni``)
+    # between the owner phrase and ``Satın Alma İhalesi``.
     if re.search(
-        rf"\b\w+(?:\s+\w+){{0,3}}\s+{legal}['’]?\w*\s+satin\s+alma\s+ihale\w*",
+        rf"\b\w+(?:\s+\w+){{0,3}}\s+{legal}['’]?\w*(?:\s+\w+){{0,3}}\s+satin\s+alma\s+ihale\w*",
         text,
     ) or re.search(
-        r"\b(?:sirket|firma|ortaklik|isletme|holding|grup)\w*(?:['’]\w*)?\s+"
-        r"satin\s+alma\s+ihale\w*",
+        r"\b(?:sirket|firma|ortaklik|isletme|holding|grup)\w*(?:['’]\w*)?"
+        r"(?:\s+\w+){0,3}\s+satin\s+alma\s+ihale\w*",
         text,
     ):
         return False
@@ -70,9 +71,10 @@ def _purchase_guard_single(value: str) -> bool | None:
         return True
 
     # Compatibility positive: ``Satın aldığımız ... kurulmuş şirket`` is an
-    # acquisition only when no explicit procurement object intervenes before
-    # the company head. This prevents ``satın aldığımız makinenin kurulduğu
-    # şirketle ...`` from borrowing the later company as the purchase target.
+    # acquisition only when the company head is directly governed by the
+    # purchase relative clause. A genitive object such as ``sunucunun`` or
+    # ``makinenin`` before a later ``kurulduğu şirket`` proves that the earlier
+    # noun, not the company, was purchased.
     rel = re.search(
         r"\bsatin\s+aldig\w*(?P<middle>(?:\s+\S+){0,8})\s+"
         r"(?:sirket|firma|ortaklik|isletme)\w*\b",
@@ -80,6 +82,8 @@ def _purchase_guard_single(value: str) -> bool | None:
     )
     if rel:
         middle = rel.group("middle")
+        if re.search(r"\b\w+(?:nin|nun|in|un)\b(?:\s+\w+){0,4}\s+kurul\w*", middle):
+            return False
         if re.search(r"\b(?:makine|ekipman|hammadde|malzeme|urun|yazilim|elektrik|enerji)\w*", middle):
             return False
         if re.search(r"\bkurul\w*\b", middle):
@@ -94,10 +98,19 @@ def _purchase_guard_single(value: str) -> bool | None:
     return None
 
 
+def _purchase_guard_single(value: str) -> bool | None:
+    decisions = [_purchase_guard_clause(part) for part in segments(value)]
+    # Independent clauses are evaluated independently. A concrete acquisition
+    # in the same field must not be suppressed by an earlier procurement clause.
+    if True in decisions:
+        return True
+    if False in decisions:
+        return False
+    return None
+
+
 def _final_purchase_guard(subject: str, summary: str) -> bool | None:
     decisions = [_purchase_guard_single(subject), _purchase_guard_single(summary)]
-    # A concrete acquisition in either field outranks an unrelated procurement
-    # clause in the other field.
     if True in decisions:
         return True
     if False in decisions:
@@ -107,42 +120,48 @@ def _final_purchase_guard(subject: str, summary: str) -> bool | None:
 
 def _final_devralma_guard(subject: str, summary: str) -> bool | None:
     raw = f"{subject}. {summary}"
-    text = normalize(raw)
 
     # Compatibility target ``Şirket X'i Devraldı`` is intentionally limited to
-    # ticker/acronym-like proper names. Mixed-case product names such as iPhone
-    # must not be promoted to M&A solely because they are case-marked.
+    # short ticker-like symbols. Uppercase spelling alone is not corporate
+    # evidence; this keeps product/model names such as IPHONE out of M&A while
+    # preserving the established ``Şirket X'i Devraldı`` compatibility case.
     if re.search(
-        r"\b(?:Şirket|Firma|Ortaklık|İşletme)\w*\s+[A-Z0-9]{1,10}['’](?:i|ı|u|ü|yi|yı|yu|yü)\s+Devral\w*\b",
+        r"\b(?:Şirket|Firma|Ortaklık|İşletme)\w*\s+[A-Z0-9]{1,5}['’](?:i|ı|u|ü|yi|yı|yu|yü)\s+Devral\w*\b",
         raw,
-        re.IGNORECASE if False else 0,
     ):
         return True
-    # Preserve normalized all-uppercase ASCII compatibility where Turkish case
-    # folding is not involved in the source text.
     if re.search(
-        r"\b(?:sirket|firma|ortaklik|isletme)\w*\s+[A-Z0-9]{1,10}\s*['’]\s*(?:i|yi|u|yu)\s+devral\w*\b",
+        r"\b(?:sirket|firma|ortaklik|isletme)\w*\s+[A-Z0-9]{1,5}\s*['’]\s*(?:i|yi|u|yu)\s+devral\w*\b",
         raw,
     ):
         return True
     return None
 
 
-def _repurchase_guard_single(value: str) -> bool | None:
+def _repurchase_guard_clause(value: str) -> bool | None:
     text = normalize(value)
     if not re.search(r"\bgeri\s+alim\w*", text):
         return None
     if re.search(r"\b(?:pay|hisse)\w*\s+geri\s+alim\w*", text):
+        return True
+    if re.search(r"\b(?:sirket|ortaklik)\w*(?:\s+\w+){0,3}\s+geri\s+alim\w*\s+program\w*", text):
         return True
     if re.search(r"\b(?:ekmek|yemek|urun|malzeme|makine|ekipman)\w*\s+geri\s+alim\w*", text):
         return False
     return None
 
 
+def _repurchase_guard_single(value: str) -> bool | None:
+    decisions = [_repurchase_guard_clause(part) for part in segments(value)]
+    if True in decisions:
+        return True
+    if False in decisions:
+        return False
+    return None
+
+
 def _final_repurchase_guard(subject: str, summary: str) -> bool | None:
     decisions = [_repurchase_guard_single(subject), _repurchase_guard_single(summary)]
-    # Negative product guards are clause/field-local: a genuine share buyback in
-    # the other field must still alert.
     if True in decisions:
         return True
     if False in decisions:
@@ -152,9 +171,17 @@ def _final_repurchase_guard(subject: str, summary: str) -> bool | None:
 
 def _named_commercial_contract(text: str) -> bool:
     normalized = normalize(text)
+    # Directly named contracts such as ``Franchise Sözleşmesi``.
     for match in re.finditer(r"\b([a-z0-9]+)\w*\s+sozlesme\w*", normalized):
         descriptor = match.group(1)
         if descriptor not in {"esas", "ana", "sirket", "ortaklik"}:
+            return True
+    # Master-contract names such as ``Franchise Ana Sözleşmesi`` are still
+    # independent commercial contracts; ``Ana`` belongs to that contract name,
+    # not to the company's articles of association.
+    for match in re.finditer(r"\b([a-z0-9]+)\w*\s+(?:ana|esas)\s+sozlesme\w*", normalized):
+        qualifier = match.group(1)
+        if qualifier not in {"sirket", "ortaklik", "esas", "ana"}:
             return True
     return False
 
