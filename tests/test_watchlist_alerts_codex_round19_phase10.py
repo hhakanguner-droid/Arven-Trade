@@ -122,7 +122,7 @@ def test_direct_round17_reload_routes_back_through_latest_stable_chain():
 
     round17.install(alert_service)
 
-    assert alert_service._PHASE10_HARDENING_CHAIN_INSTALLED == "phase10-round19"
+    assert alert_service._PHASE10_HARDENING_CHAIN_INSTALLED == "phase10-round22"
     assert alert_service._PHASE10_HARDENING_INSTALLER_IDENTITIES[2] is round17.install
     assert (
         alert_service._satin_alma_is_acquisition._phase10_round19_generation
