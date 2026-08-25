@@ -3,8 +3,8 @@
 The implementation accumulated through Codex Round 14 lives in
 ``phase10_hardening_base``.  This module remains the single stable entry point:
 every explicit ``install`` reconstructs the deterministic
-base -> Round 15 -> Round 16 -> Round 17 -> Round 18 -> Round 19 chain whenever
-any loaded installer module or installed closure has changed.
+base -> Round 15 -> Round 16 -> Round 17 -> Round 18 -> Round 19 -> Round 20
+chain whenever any loaded installer module or installed closure has changed.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from typing import Any
 
 from .phase10_hardening_base import install as _install_base
 
-_ROUND19_VERSION = "phase10-round19"
+_ROUND20_VERSION = "phase10-round20"
 _FOLLOWUP_FUNCTIONS = (
     "_satin_alma_is_acquisition",
     "_devralma_has_acquisition_context",
@@ -28,6 +28,7 @@ def _current_installers():
     from . import round17_hardening
     from . import round18_hardening
     from . import round19_hardening
+    from . import round20_hardening
 
     return (
         round15_hardening.install,
@@ -35,26 +36,28 @@ def _current_installers():
         round17_hardening.install,
         round18_hardening.install,
         round19_hardening.install,
+        round20_hardening.install,
     )
 
 
-def _round19_ready(service: Any) -> bool:
-    from . import round19_hardening
+def _round20_ready(service: Any) -> bool:
+    from . import round20_hardening
 
-    generation = round19_hardening.INSTALL_GENERATION
+    generation = round20_hardening.INSTALL_GENERATION
     wrappers_ready = (
         all(
-            getattr(getattr(service, name, None), "_phase10_round19_generation", None)
+            getattr(getattr(service, name, None), "_phase10_round20_generation", None)
             is generation
             for name in (
                 "_satin_alma_is_acquisition",
                 "_devralma_has_acquisition_context",
                 "_tesis_is_operational",
+                "_classify_event_fields",
             )
         )
         and getattr(
             getattr(service.KapWatchlistAlertService, "check_watchlist", None),
-            "_phase10_round19_generation",
+            "_phase10_round20_generation",
             None,
         )
         is generation
@@ -76,6 +79,9 @@ def _unwrap_followups(function: Any) -> Any:
     seen: set[int] = set()
     while id(current) not in seen:
         seen.add(id(current))
+        if hasattr(current, "_phase10_round20_original"):
+            current = current._phase10_round20_original
+            continue
         if hasattr(current, "_phase10_round19_original"):
             current = current._phase10_round19_original
             continue
@@ -128,9 +134,9 @@ def _set_compatibility_markers(service: Any) -> None:
 
 def install(service: Any) -> None:
     """Install every Phase 10 hardening layer in deterministic order."""
-    if _round19_ready(service):
+    if _round20_ready(service):
         _set_compatibility_markers(service)
-        service._PHASE10_HARDENING_CHAIN_INSTALLED = _ROUND19_VERSION
+        service._PHASE10_HARDENING_CHAIN_INSTALLED = _ROUND20_VERSION
         return
 
     previous_rebuild_flag = getattr(
@@ -147,12 +153,14 @@ def install(service: Any) -> None:
             install_round17,
             install_round18,
             install_round19,
+            install_round20,
         ) = _current_installers()
         install_round15(service)
         install_round16(service)
         install_round17(service)
         install_round18(service)
         install_round19(service)
+        install_round20(service)
 
         service._PHASE10_HARDENING_INSTALLER_IDENTITIES = (
             install_round15,
@@ -160,9 +168,10 @@ def install(service: Any) -> None:
             install_round17,
             install_round18,
             install_round19,
+            install_round20,
         )
         _set_compatibility_markers(service)
-        service._PHASE10_HARDENING_CHAIN_INSTALLED = _ROUND19_VERSION
+        service._PHASE10_HARDENING_CHAIN_INSTALLED = _ROUND20_VERSION
     finally:
         if previous_rebuild_flag is None:
             try:
