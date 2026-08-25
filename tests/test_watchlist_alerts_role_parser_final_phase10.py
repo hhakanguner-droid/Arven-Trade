@@ -9,7 +9,12 @@ import tradingagents.alerts.service as alert_service
 from tradingagents.dataflows.kap.models import KapDisclosure
 
 
-def _disclosure(subject: str, *, disclosure_id: int = 99001) -> KapDisclosure:
+def _disclosure(
+    subject: str,
+    *,
+    summary: str = "",
+    disclosure_id: int = 99001,
+) -> KapDisclosure:
     return KapDisclosure(
         published_at=datetime(2026, 8, 25, 17, 30),
         company="Test Şirketi A.Ş.",
@@ -20,7 +25,7 @@ def _disclosure(subject: str, *, disclosure_id: int = 99001) -> KapDisclosure:
         has_attachment=False,
         is_corrective=False,
         disclosure_id=disclosure_id,
-        summary="",
+        summary=summary,
     )
 
 
@@ -38,6 +43,7 @@ def _disclosure(subject: str, *, disclosure_id: int = 99001) -> KapDisclosure:
         ("ABC Holding aylar sonra bölündü", ("mna", 90, "high")),
         ("ABC Holding seneler sonra bölündü", ("mna", 90, "high")),
         ("Ürünü kapsayacak bir şekilde planlanan geri alım programı", ("other", 0, "low")),
+        ("Ürünü kapsamak üzere planlanan geri alım programı", ("other", 0, "low")),
         ("Şirket departmanlarının birleşmesi", ("other", 0, "low")),
         ("Şirket ekipleri birleşti", ("other", 0, "low")),
         ("İki üretim şirketi birleşti", ("mna", 90, "high")),
@@ -50,7 +56,24 @@ def _disclosure(subject: str, *, disclosure_id: int = 99001) -> KapDisclosure:
         ("ABC şirketini, tüm varlıklarıyla birlikte, satın aldı", ("mna", 90, "high")),
         ("Şirket ABC'yi satın aldı", ("mna", 90, "high")),
         ("Şirket XYZ'yi satın aldı", ("mna", 90, "high")),
+        ("Makine şirket için satın alındı", ("operations", 80, "medium")),
+        ("ABC A.Ş. yatırımcı tarafından satın alındı", ("mna", 90, "high")),
     ],
 )
 def test_final_exact_head_role_bindings(subject, expected):
     assert alert_service.classify_kap_disclosure(_disclosure(subject)) == expected
+
+
+@pytest.mark.unit
+def test_articles_phrase_does_not_hide_independent_contract_in_same_segment():
+    disclosure = _disclosure("Esas Sözleşme Tadili ve Tedarik Sözleşmesi")
+    assert alert_service.classify_kap_disclosure(disclosure) == ("commercial", 85, "high")
+
+
+@pytest.mark.unit
+def test_articles_subject_does_not_hide_independent_summary_contract():
+    disclosure = _disclosure(
+        "Esas Sözleşme Tadili",
+        summary="Tedarik sözleşmesi imzalandı",
+    )
+    assert alert_service.classify_kap_disclosure(disclosure) == ("commercial", 85, "high")
