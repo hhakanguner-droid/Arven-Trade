@@ -41,28 +41,63 @@ def _legal_designator_pattern() -> str:
     return r"(?:a\.?s\.?|ltd\.?\s+sti\.?)"
 
 
+def _is_procurement_token(token: str) -> bool:
+    """Reuse the role parser's authoritative procurement vocabulary."""
+    checker = getattr(_engine, "_procure", None)
+    if callable(checker):
+        return bool(checker(token))
+    prefixes = getattr(_engine, "_PROCURE", ())
+    return bool(prefixes and token.startswith(prefixes))
+
+
+def _is_product_repurchase_token(token: str) -> bool:
+    """Reuse the role parser's authoritative product-repurchase vocabulary."""
+    prefixes = getattr(_engine, "_PRODUCT", ())
+    return bool(prefixes and token.startswith(prefixes))
+
+
+def _contains_procurement_object(value: str) -> bool:
+    return any(_is_procurement_token(token) for token in tokens(value))
+
+
+def _contains_product_repurchase_object(value: str) -> bool:
+    return any(_is_product_repurchase_token(token) for token in tokens(value))
+
+
+def _explicit_purchase_target(value: str) -> bool:
+    text = normalize(value)
+    return bool(
+        re.search(
+            r"\b(?:sirketini|firmayi|firmasini|ortakligi|isletmeyi|istiraki|istirakini|"
+            r"payi|paylari|hisseyi|hisseleri|varligi|varliklari)\s+satin\s+al\w*",
+            text,
+        )
+        or re.search(
+            r"\bsatin\s+aldig\w*(?:\s+\w+){0,4}\s+"
+            r"(?:bagli\s+)?(?:ortaklik|istirak|sirket|firma|isletme)\w*\b",
+            text,
+        )
+    )
+
+
 def _purchase_guard_clause(value: str) -> bool | None:
     text = normalize(value)
     if not text.strip():
         return None
     legal = _legal_designator_pattern()
 
-    # Explicit accusative company objects are acquisitions. This positive must
-    # be clause-local so an earlier procurement clause cannot suppress a later
-    # ``ABC şirketini satın aldı`` sentence.
-    if re.search(
-        r"\b(?:sirketini|firmayi|ortakligi|isletmeyi)\s+satin\s+al\w*",
-        text,
-    ):
+    # Evaluate every purchase predicate before allowing a procurement decision
+    # to dominate a coordinated clause. This preserves cases such as
+    # ``... satın aldığı makineler ve satın aldığı bağlı ortaklık``.
+    if _explicit_purchase_target(text):
         return True
 
     # A beneficiary introduced by ``için`` is not the passive acquisition
     # target when an explicit procurement object precedes that phrase.
     if re.search(
-        r"\b(?:makine|ekipman|hammadde|malzeme|urun|yazilim|elektrik|enerji)\w*\s+"
-        r"(?:sirket|firma|ortaklik|isletme)\w*(?:\s+\w+){0,3}\s+icin\s+satin\s+alin\w*",
+        r"\b(?:\w+\s+){0,3}(?:sirket|firma|ortaklik|isletme)\w*(?:\s+\w+){0,3}\s+icin\s+satin\s+alin\w*",
         text,
-    ):
+    ) and _contains_procurement_object(text):
         return False
 
     # Procurement headings owned by a company are buyer-owned procurement,
@@ -72,7 +107,7 @@ def _purchase_guard_clause(value: str) -> bool | None:
         rf"\b\w+(?:\s+\w+){{0,3}}\s+{legal}['’]?\w*(?:\s+\w+){{0,3}}\s+satin\s+alma\s+ihale\w*",
         text,
     ) or re.search(
-        r"\b(?:sirket|firma|ortaklik|isletme|holding|grup)\w*(?:['’]\w*)?"
+        r"\b(?:sirket|firma|ortaklik|ortaklig|isletme|holding|grup)\w*(?:['’]\w*)?"
         r"(?:\s+\w+){0,3}\s+satin\s+alma\s+ihale\w*",
         text,
     ):
@@ -90,8 +125,8 @@ def _purchase_guard_clause(value: str) -> bool | None:
 
     # Compatibility positive: ``Satın aldığımız ... kurulmuş şirket`` is an
     # acquisition only when the company head is directly governed by the
-    # purchase relative clause. Known purchased-object heads prove that the
-    # earlier noun, not the later company, was purchased.
+    # purchase relative clause. Any procurement head in the intervening noun
+    # phrase proves that the earlier noun, not the later company, was bought.
     rel = re.search(
         r"\bsatin\s+aldig\w*(?P<middle>(?:\s+\S+){0,8})\s+"
         r"(?:sirket|firma|ortaklik|isletme)\w*\b",
@@ -99,10 +134,7 @@ def _purchase_guard_clause(value: str) -> bool | None:
     )
     if rel:
         middle = rel.group("middle")
-        if re.search(
-            r"\b(?:sunucu|makine|ekipman|hammadde|malzeme|urun|yazilim|elektrik|enerji)\w*",
-            middle,
-        ):
+        if _contains_procurement_object(middle):
             return False
         if re.search(r"\bkurul\w*\b", middle):
             return True
@@ -127,7 +159,34 @@ def _purchase_guard_single(value: str) -> bool | None:
     return None
 
 
+def _proper_purchase_target(subject: str, summary: str) -> bool:
+    raw = f"{subject}. {summary}"
+    # Preserve the established ticker-like compatibility form while avoiding
+    # arbitrary product names such as IPHONE (six letters).
+    return bool(
+        re.search(
+            r"\b(?:Şirket|Firma|Ortaklık|İşletme)\w*\s+[A-Z0-9]{1,5}['’](?:i|ı|u|ü|yi|yı|yu|yü)\s+"
+            r"satın\s+al(?:dı|acak|ıyor)\w*\b",
+            raw,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _purchase_heading_target(subject: str, summary: str) -> bool:
+    raw = normalize(f"{subject}. {summary}")
+    return bool(
+        re.search(
+            r"\b(?:satin\s+alma|devralma)\s*:\s*(?:\w+\s+){0,3}"
+            r"(?:sirketi|firmasi|ortakligi|isletmesi|holding|grup)\b",
+            raw,
+        )
+    )
+
+
 def _final_purchase_guard(subject: str, summary: str) -> bool | None:
+    if _proper_purchase_target(subject, summary) or _purchase_heading_target(subject, summary):
+        return True
     decisions = [_purchase_guard_single(subject), _purchase_guard_single(summary)]
     if True in decisions:
         return True
@@ -138,6 +197,9 @@ def _final_purchase_guard(subject: str, summary: str) -> bool | None:
 
 def _final_devralma_guard(subject: str, summary: str) -> bool | None:
     raw = f"{subject}. {summary}"
+
+    if _purchase_heading_target(subject, summary):
+        return True
 
     # Compatibility target ``Şirket X'i Devraldı`` is intentionally limited to
     # short ticker-like symbols. Uppercase spelling alone is not corporate
@@ -162,12 +224,14 @@ def _repurchase_guard_clause(value: str) -> bool | None:
         return None
     if re.search(r"\b(?:pay|hisse)\w*\s+geri\s+alim\w*", text):
         return True
-    # Product recall/re-purchase language is authoritative before the generic
-    # company-program positive; otherwise ``Şirket ürün geri alım programı``
-    # is incorrectly promoted to ownership.
-    if re.search(r"\b(?:ekmek|yemek|urun|malzeme|makine|ekipman)\w*\s+geri\s+alim\w*", text):
+
+    # The role parser owns the supported product/recall vocabulary. Reuse it
+    # rather than maintaining another finite subset in this facade.
+    before_repurchase = re.split(r"\bgeri\s+alim\w*", text, maxsplit=1)[0]
+    if _contains_product_repurchase_object(before_repurchase):
         return False
-    if re.search(r"\b(?:sirket|ortaklik)\w*(?:\s+\w+){0,3}\s+geri\s+alim\w*\s+program\w*", text):
+
+    if re.search(r"\b(?:sirket|ortaklik|ortaklig)\w*(?:\s+\w+){0,3}\s+geri\s+alim\w*\s+program\w*", text):
         return True
     return None
 
@@ -191,7 +255,7 @@ def _final_repurchase_guard(subject: str, summary: str) -> bool | None:
 
 
 def _company_article_qualifier(token: str) -> bool:
-    return token.startswith(("sirket", "ortaklik", "firma", "isletme"))
+    return token.startswith(("sirket", "ortaklik", "ortaklig", "firma", "isletme"))
 
 
 def _named_commercial_contract(text: str) -> bool:
@@ -217,6 +281,20 @@ def _independent_commercial_contract(subject: str, summary: str) -> bool:
     return _named_commercial_contract(summary)
 
 
+def _numbered_article_reference(value: str) -> bool:
+    """Recognize generic contract-article shorthand without swallowing named contracts."""
+    text = normalize(value)
+    if _named_commercial_contract(value):
+        return False
+    return bool(
+        re.search(
+            r"\bsozlesme\w*(?:\s+\w+){0,3}\s+\d+\s*(?:nci|nci|nci|ncu|numarali|sayili)?\s+madde\w*",
+            text,
+        )
+        or re.search(r"\bsozlesme\w*\s+\d+\s+madde\w*", text)
+    )
+
+
 def _articles_shorthand_reference(subject: str, summary: str) -> bool:
     """Identify generic summary references back to an articles subject."""
     if not re.search(r"\b(?:esas|ana)\s+sozlesme\w*", normalize(subject)):
@@ -224,7 +302,10 @@ def _articles_shorthand_reference(subject: str, summary: str) -> bool:
     if _named_commercial_contract(summary):
         return False
     text = normalize(summary)
-    return bool(re.search(r"\bsozlesme\w*(?:\s+\w+){0,5}\s+madde\w*", text))
+    return bool(
+        re.search(r"\bsozlesme\w*(?:\s+\w+){0,5}\s+madde\w*", text)
+        or _numbered_article_reference(summary)
+    )
 
 
 def satin_alma_is_acquisition(text: str) -> bool:
@@ -264,6 +345,8 @@ def term_matches(subject: str, summary: str, term: str) -> bool:
             return True
         if _articles_shorthand_reference(subject, summary):
             return False
+        if _numbered_article_reference(subject) or _numbered_article_reference(summary):
+            return False
     return _engine.term_matches(subject, summary, term)
 
 
@@ -278,21 +361,31 @@ def classify_event_fields(
     score = 0
     if str(disclosure_type).upper() in {"FR", "FS"}:
         category, score = "financials", 100
+    business_relationship = False
     for candidate, weight, terms in event_rules:
         if weight <= score:
             continue
-        if any(term_matches(subject, summary, term) for term in terms):
+        matched_terms = []
+        for term in terms:
+            if normalize(term) == "is iliskisi":
+                business_relationship = business_relationship or term_matches(subject, summary, term)
+                continue
+            if term_matches(subject, summary, term):
+                matched_terms.append(term)
+        if matched_terms:
             category, score = candidate, weight
+
+    # ``iş ilişkisi`` is an established score-80 commercial event. Keep it
+    # separate from score-85 contracts/tenders/orders.
+    if business_relationship and score < 80:
+        category, score = "commercial", 80
 
     repurchase_guard = _final_repurchase_guard(subject, summary)
     articles_shorthand = _articles_shorthand_reference(subject, summary)
 
     if score < 80:
         purchase_guard = _final_purchase_guard(subject, summary)
-        if purchase_guard is False and re.search(
-            r"\b(?:makine|ekipman|hammadde|malzeme|urun|yazilim|elektrik|enerji)\w*",
-            normalize(f"{subject}. {summary}"),
-        ):
+        if purchase_guard is False and _contains_procurement_object(f"{subject}. {summary}"):
             category, score = "operations", 80
         else:
             base_category, base_score, _ = _engine.classify_event_fields(
@@ -304,7 +397,7 @@ def classify_event_fields(
             )
             if repurchase_guard is False and base_category == "ownership":
                 base_score = -1
-            if articles_shorthand and base_category == "commercial":
+            if (articles_shorthand or _numbered_article_reference(subject) or _numbered_article_reference(summary)) and base_category == "commercial":
                 base_score = -1
             if base_score > score:
                 category, score = base_category, base_score
