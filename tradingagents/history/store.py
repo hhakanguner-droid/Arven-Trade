@@ -240,7 +240,7 @@ class AnalysisHistoryStore:
         ticker: str | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
-        """Return analyses missing at least one requested horizon, oldest first."""
+        """Return analyses missing a requested raw/benchmark/alpha horizon, oldest first."""
         horizon_values = tuple(
             sorted({int(value) for value in horizons if int(value) > 0})
         )
@@ -254,7 +254,8 @@ class AnalysisHistoryStore:
         if ticker:
             where = "WHERE a.ticker=?"
             params.append(ticker)
-        params.extend([len(horizon_values), limit])
+        required = len(horizon_values)
+        params.extend([required, required, limit])
 
         sql = f"""
             SELECT a.id
@@ -265,6 +266,13 @@ class AnalysisHistoryStore:
             {where}
             GROUP BY a.id
             HAVING COUNT(DISTINCT p.horizon_days) < ?
+                OR COUNT(
+                    DISTINCT CASE
+                        WHEN p.benchmark_return IS NOT NULL
+                         AND p.alpha_return IS NOT NULL
+                        THEN p.horizon_days
+                    END
+                ) < ?
             ORDER BY a.trade_date ASC, a.id ASC
             LIMIT ?
         """
@@ -294,7 +302,8 @@ class AnalysisHistoryStore:
         *,
         count: int = 2,
     ) -> list[dict[str, Any]]:
-        return self.list_analyses(ticker, limit=max(2, count))
+        count = max(1, min(int(count), 1000))
+        return self.list_analyses(ticker, limit=count)
 
     def performance_summary(self, ticker: str | None = None) -> dict[str, Any]:
         where = ""
