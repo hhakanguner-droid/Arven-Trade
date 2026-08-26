@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import traceback
 from collections.abc import Mapping
 from typing import Any
 
@@ -44,6 +45,22 @@ def redact_sensitive_text(
     return text
 
 
+def _redact_record(
+    record: logging.LogRecord,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> None:
+    record.msg = redact_sensitive_text(record.getMessage(), environ=environ)
+    record.args = ()
+    if record.exc_info:
+        rendered = "".join(traceback.format_exception(*record.exc_info))
+        record.exc_text = redact_sensitive_text(rendered, environ=environ)
+    elif record.exc_text:
+        record.exc_text = redact_sensitive_text(record.exc_text, environ=environ)
+    if record.stack_info:
+        record.stack_info = redact_sensitive_text(record.stack_info, environ=environ)
+
+
 class SecretRedactionFilter(logging.Filter):
     """Logging filter that prevents secrets from reaching configured handlers."""
 
@@ -52,9 +69,7 @@ class SecretRedactionFilter(logging.Filter):
         self.environ = environ
 
     def filter(self, record: logging.LogRecord) -> bool:
-        message = record.getMessage()
-        record.msg = redact_sensitive_text(message, environ=self.environ)
-        record.args = ()
+        _redact_record(record, environ=self.environ)
         return True
 
 
@@ -66,8 +81,7 @@ def install_secret_redaction() -> None:
 
     def redacting_factory(*args, **kwargs):
         record = current_factory(*args, **kwargs)
-        record.msg = redact_sensitive_text(record.getMessage())
-        record.args = ()
+        _redact_record(record)
         return record
 
     redacting_factory._arven_secret_redaction = True  # type: ignore[attr-defined]
