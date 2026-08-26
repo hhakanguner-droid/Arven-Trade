@@ -142,3 +142,13 @@ def test_disabled_limits_are_non_blocking(tmp_path):
     for _ in range(20):
         result = guard.before_run()
         assert result["daily_spend_usd"] == 0.0
+
+
+def test_disabled_limits_ignore_stale_corrupt_guard_state(tmp_path):
+    (tmp_path / "run_rate.json").write_text("{broken", encoding="utf-8")
+    (tmp_path / "daily_cost.json").write_text("{broken", encoding="utf-8")
+    guard = OperationalGuard(tmp_path, OperationalPolicy())
+
+    result = guard.before_run()
+
+    assert result == {"estimated_cost_usd": 0.0, "daily_spend_usd": 0.0}
