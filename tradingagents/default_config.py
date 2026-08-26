@@ -19,6 +19,9 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_BENCHMARK_TICKER":     "benchmark_ticker",
     "TRADINGAGENTS_TEMPERATURE":          "temperature",
     "TRADINGAGENTS_LLM_MAX_RETRIES":      "llm_max_retries",
+    "TRADINGAGENTS_ANALYSIS_HISTORY_ENABLED": "analysis_history_enabled",
+    "TRADINGAGENTS_ANALYSIS_HISTORY_PATH": "analysis_history_path",
+    "TRADINGAGENTS_ANALYSIS_HISTORY_RESOLVE_LIMIT": "analysis_history_resolve_limit",
     "TRADINGAGENTS_KAP_ENABLED":          "kap_enabled",
     "TRADINGAGENTS_KAP_LOOKBACK_DAYS":    "kap_lookback_days",
     "TRADINGAGENTS_KAP_MAX_DISCLOSURES":  "kap_max_disclosures",
@@ -86,6 +89,15 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # the oldest resolved entries are pruned once this limit is exceeded.
     # Pending entries are never pruned. None disables rotation entirely.
     "memory_log_max_entries": None,
+    # Phase 11 analysis history. Enabled by default; failures are fail-open so
+    # persistence/market-data issues never block the core analysis pipeline.
+    "analysis_history_enabled": True,
+    "analysis_history_path": os.getenv(
+        "TRADINGAGENTS_ANALYSIS_HISTORY_PATH",
+        os.path.join(_TRADINGAGENTS_HOME, "history", "analysis_history.db"),
+    ),
+    "analysis_history_horizons": (1, 5, 20),
+    "analysis_history_resolve_limit": 10,
     # LLM settings
     "llm_provider": "openai",
     "deep_think_llm": "gpt-5.5",
