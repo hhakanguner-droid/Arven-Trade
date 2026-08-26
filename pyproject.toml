@@ -40,6 +40,9 @@ dev = [
     "pytest>=8.0",
     "pytest-subtests>=0.13",
     "httpx>=0.27",
+    # Full-suite CI collects the Phase 13 API tests; FastAPI is therefore a
+    # development/test dependency even though production installs it via [web].
+    "fastapi>=0.116,<1",
 ]
 # Optional web/PWA service layer. Kept out of the core install so library/CLI
 # users do not pull an ASGI stack unless they explicitly deploy the API.
