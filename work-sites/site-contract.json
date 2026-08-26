@@ -1,0 +1,69 @@
+{
+  "phase": 14,
+  "product": "ARVEN Trade",
+  "repository": "hhakanguner-droid/Arven-Trade",
+  "production_branch": "main",
+  "backend_contract_phase": 13,
+  "backend_baseline_commit": "44a72f6f64dcb249e7ff0c36ae5f51031e8dd881",
+  "market_scope": "BIST/Turkiye",
+  "visual_sources": [
+    "ARVEN_TRADE_PC_Mobil_PWA_Mockuplari.pdf",
+    "ARVEN_TRADE_PC_Ana_Pano.png",
+    "ARVEN_TRADE_PC_Hisse_Analizi.png",
+    "ARVEN_TRADE_Mobil_PWA_Mockuplari.png",
+    "ARVEN_TRADE_Splash_Mockup.png",
+    "ARVEN_TRADE_Logo.png"
+  ],
+  "security": {
+    "browser_bearer_token_allowed": false,
+    "same_origin_server_boundary_required": true,
+    "client_secret_storage_forbidden": [
+      "javascript_bundle",
+      "service_worker",
+      "localStorage",
+      "indexedDB",
+      "client_visible_env",
+      "html"
+    ]
+  },
+  "upstream": {
+    "public": [
+      {"method": "GET", "path": "/healthz"}
+    ],
+    "authenticated": [
+      {"method": "GET", "path": "/api/v1/health"},
+      {"method": "POST", "path": "/api/v1/analyses", "forward_headers": ["Idempotency-Key"]},
+      {"method": "GET", "path": "/api/v1/analyses/{job_id}"},
+      {"method": "GET", "path": "/api/v1/history"},
+      {"method": "GET", "path": "/api/v1/history/{analysis_id}"},
+      {"method": "GET", "path": "/api/v1/compare/{ticker}"},
+      {"method": "GET", "path": "/api/v1/performance"}
+    ]
+  },
+  "browser_routes": [
+    {"method": "GET", "path": "/api/arven/health", "upstream": "/api/v1/health"},
+    {"method": "POST", "path": "/api/arven/analyses", "upstream": "/api/v1/analyses"},
+    {"method": "GET", "path": "/api/arven/analyses/{job_id}", "upstream": "/api/v1/analyses/{job_id}"},
+    {"method": "GET", "path": "/api/arven/history", "upstream": "/api/v1/history"},
+    {"method": "GET", "path": "/api/arven/history/{analysis_id}", "upstream": "/api/v1/history/{analysis_id}"},
+    {"method": "GET", "path": "/api/arven/compare/{ticker}", "upstream": "/api/v1/compare/{ticker}"},
+    {"method": "GET", "path": "/api/arven/performance", "upstream": "/api/v1/performance"}
+  ],
+  "analysis_states": ["queued", "running", "succeeded", "failed"],
+  "required_error_states": [401, 403, 404, 409, 429, 503, 500],
+  "agent_cards": [
+    "market",
+    "sentiment",
+    "news",
+    "kap",
+    "fundamentals",
+    "trader",
+    "bull",
+    "bear",
+    "risk"
+  ],
+  "release": {
+    "record_synced_git_sha": true,
+    "automatic_git_to_sites_sync_assumed": false
+  }
+}
