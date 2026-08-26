@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 
 import pytest
 
@@ -40,6 +41,29 @@ def test_logging_filter_redacts_formatted_args():
     SecretRedactionFilter({"SERVICE_TOKEN": "very-secret-token-value"}).filter(record)
 
     assert record.getMessage() == "token=[REDACTED]"
+
+
+def test_logging_filter_redacts_exception_traceback():
+    secret = "sk-traceback-secret-value-12345"
+    try:
+        raise RuntimeError(f"provider rejected {secret}")
+    except RuntimeError:
+        exc_info = sys.exc_info()
+
+    record = logging.LogRecord(
+        "provider",
+        logging.ERROR,
+        __file__,
+        1,
+        "request failed",
+        (),
+        exc_info,
+    )
+    SecretRedactionFilter({"PROVIDER_API_KEY": secret}).filter(record)
+
+    assert record.exc_text is not None
+    assert secret not in record.exc_text
+    assert "[REDACTED]" in record.exc_text
 
 
 def test_persistent_run_limiter_blocks_and_then_recovers(tmp_path):
