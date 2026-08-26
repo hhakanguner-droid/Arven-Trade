@@ -10,6 +10,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  phase12:
+    name: phase12 targeted gate (py3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (with dev extras)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Run Phase 12 presentation tests
+        run: pytest -q tests/test_presentation_phase12.py
+      - name: Lint Phase 12 surface
+        run: |
+          ruff check \
+            tradingagents/presentation \
+            tests/test_presentation_phase12.py
+
   phase11:
     name: phase11 targeted gate (py3.12)
     runs-on: ubuntu-latest
@@ -92,5 +112,5 @@ jobs:
         run: pip install "ruff>=0.15"
       - name: Lint the repository
         # Keep the repository-wide gate visible even while legacy Phase 10
-        # baseline debt is being tracked separately from the Phase 11 gate.
+        # baseline debt is being tracked separately from targeted phase gates.
         run: ruff check .
