@@ -8,10 +8,11 @@ interactive streaming CLI persist the exact same completed state.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Iterable, Sequence
 from datetime import date, datetime, timedelta
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any
 
 import yfinance as yf
 
