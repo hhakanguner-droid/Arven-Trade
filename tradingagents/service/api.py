@@ -9,7 +9,7 @@ import re
 from contextlib import asynccontextmanager
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
@@ -168,7 +168,10 @@ def create_app(
         )
 
     def require_auth(
-        credentials: HTTPAuthorizationCredentials | None = Depends(_BEARER),
+        credentials: Annotated[
+            HTTPAuthorizationCredentials | None,
+            Depends(_BEARER),
+        ] = None,
     ) -> None:
         if disabled:
             return
