@@ -83,11 +83,12 @@ class AnalysisHistoryTracker:
             merged.update(result)
             ticker = str(merged.get("company_of_interest") or "").strip()
 
-            # Resolve older records first so the just-completed analysis is not
-            # immediately selected as a pending row and fetched twice.
+            # Persist the just-completed decision before any older backfill work.
+            # This keeps the new analysis durable even if a market-data call stalls
+            # or the process is interrupted during opportunistic backfill.
+            analysis_id = self.record_completed(merged)
             if ticker:
-                self.resolve_pending(ticker)
-            self.record_completed(merged)
+                self.resolve_pending(ticker, exclude_analysis_id=analysis_id)
             return result
 
         return wrapped
@@ -164,25 +165,38 @@ class AnalysisHistoryTracker:
             )
         return analysis_id
 
-    def resolve_pending(self, ticker: str | None = None) -> int:
+    def resolve_pending(
+        self,
+        ticker: str | None = None,
+        *,
+        exclude_analysis_id: int | None = None,
+    ) -> int:
         """Fill missing 1/5/20-session outcomes, oldest pending analyses first.
 
         When a ticker is supplied (the normal live-analysis path), all selected
         pending rows reuse one stock-price fetch and one benchmark fetch.  This
         keeps automatic backfill bounded and avoids starving the analysis path.
+        ``exclude_analysis_id`` avoids immediately re-fetching the analysis that
+        the final node just persisted.
         """
         if not self.enabled or self.store is None:
             return 0
 
+        fetch_limit = self.resolve_limit + (1 if exclude_analysis_id is not None else 0)
         try:
             pending = self.store.pending_analyses(
                 self.horizons,
                 ticker=ticker,
-                limit=self.resolve_limit,
+                limit=fetch_limit,
             )
         except Exception as exc:
             logger.warning("Could not read pending analysis history: %s", exc)
             return 0
+
+        if exclude_analysis_id is not None:
+            excluded = int(exclude_analysis_id)
+            pending = [row for row in pending if int(row.get("id", -1)) != excluded]
+        pending = pending[: self.resolve_limit]
         if not pending:
             return 0
 
