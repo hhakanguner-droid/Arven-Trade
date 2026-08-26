@@ -23,12 +23,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
       - name: Run Phase 12 production regression suite
-        run: pytest -q tests/test_production_hardening_phase12.py
+        run: |
+          pytest -q \
+            tests/test_production_hardening_phase12.py \
+            tests/test_production_runtime_phase12.py
       - name: Lint Phase 12 surface
         run: |
           ruff check \
             tradingagents/operations \
-            tests/test_production_hardening_phase12.py
+            tests/test_production_hardening_phase12.py \
+            tests/test_production_runtime_phase12.py
 
   phase11:
     name: phase11 targeted gate (py3.12)
@@ -109,6 +113,4 @@ jobs:
       - name: Install ruff
         run: pip install "ruff>=0.15"
       - name: Lint the repository
-        # Keep the repository-wide gate visible while legacy Phase 10 baseline
-        # debt is tracked separately from finite per-phase acceptance gates.
         run: ruff check .
