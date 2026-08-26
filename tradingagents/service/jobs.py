@@ -17,6 +17,10 @@ class IdempotencyConflict(RuntimeError):
     """Raised when an idempotency key is reused for a different request."""
 
 
+class QueueCapacityExceeded(RuntimeError):
+    """Raised when the bounded pending-job queue is full."""
+
+
 class AnalysisJobStore:
     """Small SQLite-backed queue/status store safe across API restarts."""
 
@@ -100,47 +104,61 @@ class AnalysisJobStore:
         request: dict[str, Any],
         *,
         idempotency_key: str | None = None,
+        max_pending_jobs: int = 100,
     ) -> tuple[dict[str, Any], bool]:
+        """Atomically deduplicate and enqueue one request within a bounded queue."""
         request_hash = self._request_hash(request)
         job_id = uuid.uuid4().hex
         now = self._now()
         with self._connect() as conn:
-            try:
-                conn.execute(
-                    """
-                    INSERT INTO analysis_jobs (
-                        id, idempotency_key, request_hash, ticker, trade_date,
-                        estimated_cost_usd, status, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)
-                    """,
-                    (
-                        job_id,
-                        idempotency_key,
-                        request_hash,
-                        request["ticker"],
-                        request["trade_date"],
-                        request.get("estimated_cost_usd"),
-                        now,
-                        now,
-                    ),
-                )
-            except sqlite3.IntegrityError:
-                if not idempotency_key:
-                    raise
+            conn.execute("BEGIN IMMEDIATE")
+            if idempotency_key:
                 existing = conn.execute(
                     "SELECT * FROM analysis_jobs WHERE idempotency_key = ?",
                     (idempotency_key,),
                 ).fetchone()
-                if existing is None:
-                    raise
-                if existing["request_hash"] != request_hash:
-                    raise IdempotencyConflict(
-                        "Idempotency-Key was already used for a different analysis request"
-                    ) from None
-                return self._row(existing), False  # type: ignore[return-value]
+                if existing is not None:
+                    if existing["request_hash"] != request_hash:
+                        raise IdempotencyConflict(
+                            "Idempotency-Key was already used for a different analysis request"
+                        )
+                    conn.commit()
+                    return self._row(existing), False  # type: ignore[return-value]
+
+            if max_pending_jobs > 0:
+                pending = int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM analysis_jobs "
+                        "WHERE status IN ('queued', 'running')"
+                    ).fetchone()[0]
+                )
+                if pending >= int(max_pending_jobs):
+                    raise QueueCapacityExceeded(
+                        f"ARVEN analysis queue is full ({pending}/{int(max_pending_jobs)})"
+                    )
+
+            conn.execute(
+                """
+                INSERT INTO analysis_jobs (
+                    id, idempotency_key, request_hash, ticker, trade_date,
+                    estimated_cost_usd, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)
+                """,
+                (
+                    job_id,
+                    idempotency_key,
+                    request_hash,
+                    request["ticker"],
+                    request["trade_date"],
+                    request.get("estimated_cost_usd"),
+                    now,
+                    now,
+                ),
+            )
             created = conn.execute(
                 "SELECT * FROM analysis_jobs WHERE id = ?", (job_id,)
             ).fetchone()
+            conn.commit()
         return self._row(created), True  # type: ignore[return-value]
 
     def get(self, job_id: str) -> dict[str, Any] | None:
@@ -201,6 +219,28 @@ class AnalysisJobStore:
                 "SELECT id FROM analysis_jobs WHERE status = 'queued' ORDER BY created_at"
             ).fetchall()
         return [str(row["id"]) for row in rows]
+
+    def prune_terminal(self, *, max_terminal_jobs: int = 5000) -> int:
+        """Keep only the newest bounded set of succeeded/failed job records."""
+        if max_terminal_jobs <= 0:
+            return 0
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id FROM analysis_jobs
+                WHERE status IN ('succeeded', 'failed')
+                ORDER BY updated_at DESC, id DESC
+                LIMIT -1 OFFSET ?
+                """,
+                (int(max_terminal_jobs),),
+            ).fetchall()
+            ids = [str(row["id"]) for row in rows]
+            if ids:
+                conn.executemany(
+                    "DELETE FROM analysis_jobs WHERE id = ?",
+                    [(job_id,) for job_id in ids],
+                )
+        return len(ids)
 
     def counts(self) -> dict[str, int]:
         values = {"queued": 0, "running": 0, "succeeded": 0, "failed": 0}
