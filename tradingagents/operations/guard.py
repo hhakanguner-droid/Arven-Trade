@@ -43,7 +43,9 @@ def _state_lock(path: Path, *, timeout_seconds: float = 5.0):
             except FileNotFoundError:
                 continue
             if time.monotonic() >= deadline:
-                raise TimeoutError(f"Timed out waiting for operational state lock: {lock_path}")
+                raise TimeoutError(
+                    f"Timed out waiting for operational state lock: {lock_path}"
+                ) from None
             time.sleep(0.05)
     try:
         yield
@@ -151,7 +153,7 @@ class OperationalPolicy:
     estimated_run_cost_usd: float = 0.0
 
     @classmethod
-    def from_env(cls) -> "OperationalPolicy":
+    def from_env(cls) -> OperationalPolicy:
         return cls(
             max_runs_per_minute=max(
                 0, int(os.getenv("TRADINGAGENTS_MAX_RUNS_PER_MINUTE", "0"))
@@ -182,7 +184,7 @@ class OperationalGuard:
         )
 
     @classmethod
-    def from_env(cls, state_dir: str | Path) -> "OperationalGuard":
+    def from_env(cls, state_dir: str | Path) -> OperationalGuard:
         return cls(state_dir, OperationalPolicy.from_env())
 
     def before_run(self, *, estimated_cost_usd: float | None = None) -> dict[str, float]:
