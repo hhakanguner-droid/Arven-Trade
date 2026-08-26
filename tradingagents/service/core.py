@@ -9,6 +9,11 @@ from tradingagents.agents.utils.rating import parse_rating
 from tradingagents.operations.security import redact_sensitive_text
 
 from .jobs import AnalysisJobStore
+from .presentation import history_card, history_detail
+
+
+class HistoryUnavailable(RuntimeError):
+    """Raised when the optional Phase 11 history store is unavailable."""
 
 
 class AnalysisService:
@@ -19,6 +24,7 @@ class AnalysisService:
         runtime: Any,
         store: AnalysisJobStore,
         *,
+        history_store: Any | None = None,
         max_workers: int = 1,
         max_pending_jobs: int = 100,
         max_terminal_jobs: int = 5000,
@@ -26,6 +32,7 @@ class AnalysisService:
     ):
         self.runtime = runtime
         self.store = store
+        self.history_store = history_store
         self.max_pending_jobs = max(1, int(max_pending_jobs))
         self.max_terminal_jobs = max(1, int(max_terminal_jobs))
         self._executor = ThreadPoolExecutor(
@@ -102,11 +109,32 @@ class AnalysisService:
     def get(self, job_id: str) -> dict[str, Any] | None:
         return self.store.get(job_id)
 
+    def _history(self):
+        if self.history_store is None:
+            raise HistoryUnavailable("analysis history is unavailable")
+        return self.history_store
+
+    def list_history(self, ticker: str | None = None, *, limit: int = 50) -> list[dict[str, Any]]:
+        records = self._history().list_analyses(ticker, limit=limit)
+        return [history_card(record) for record in records]
+
+    def get_history(self, analysis_id: int) -> dict[str, Any] | None:
+        record = self._history().get_analysis(int(analysis_id))
+        return history_detail(record) if record else None
+
+    def compare_history(self, ticker: str, *, count: int = 2) -> list[dict[str, Any]]:
+        records = self._history().compare_latest(ticker, count=count)
+        return [history_card(record) for record in records]
+
+    def performance_summary(self, ticker: str | None = None) -> dict[str, Any]:
+        return self._history().performance_summary(ticker)
+
     def health(self) -> dict[str, Any]:
         runtime_health = self.runtime.health() if hasattr(self.runtime, "health") else {}
         return {
             "status": "ok",
             "runtime": runtime_health,
+            "history": {"available": self.history_store is not None},
             "jobs": {
                 **self.store.counts(),
                 "max_pending": self.max_pending_jobs,
