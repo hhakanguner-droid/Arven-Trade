@@ -1,3 +1,7 @@
+from datetime import date
+
+import pytest
+
 from tradingagents.history import AnalysisHistoryTracker
 
 
@@ -43,3 +47,64 @@ def test_final_node_persists_current_analysis_before_backfill(tmp_path):
         ("record", "Rating: Hold"),
         ("resolve", "THYAO.IS", 42),
     ]
+
+
+def test_same_day_rerun_reuses_original_benchmark_and_entry_snapshots(tmp_path):
+    calls = []
+    stock = [
+        (date(2026, 8, 3), 100.0),
+        (date(2026, 8, 4), 110.0),
+    ]
+    bist = [
+        (date(2026, 8, 3), 200.0),
+        (date(2026, 8, 4), 209.0),
+    ]
+    spy = [
+        (date(2026, 8, 3), 500.0),
+        (date(2026, 8, 4), 550.0),
+    ]
+
+    def loader(symbol, start, end):
+        calls.append(symbol)
+        if symbol == "^XU100":
+            return bist
+        if symbol == "SPY":
+            return spy
+        return stock
+
+    config = _config(tmp_path)
+    config["analysis_history_horizons"] = (1,)
+    tracker = AnalysisHistoryTracker(config, history_loader=loader)
+    analysis_id = tracker.store.record_analysis(
+        ticker="THYAO.IS",
+        trade_date="2026-08-03",
+        final_decision="Rating: Buy",
+        state={
+            "company_of_interest": "THYAO.IS",
+            "trade_date": "2026-08-03",
+            "final_trade_decision": "Rating: Buy",
+        },
+        entry_price=95.0,
+        benchmark_ticker="^XU100",
+        benchmark_entry_price=190.0,
+    )
+
+    # Simulate a later config change before the same ticker/date is rerun.
+    tracker.config["benchmark_ticker"] = "SPY"
+    tracker.record_completed(
+        {
+            "company_of_interest": "THYAO.IS",
+            "trade_date": "2026-08-03",
+            "final_trade_decision": "Rating: Hold",
+        }
+    )
+
+    row = tracker.store.get_analysis(analysis_id)
+    assert calls == ["THYAO.IS", "^XU100"]
+    assert row["rating"] == "Hold"
+    assert row["entry_price"] == 95.0
+    assert row["benchmark_ticker"] == "^XU100"
+    assert row["benchmark_entry_price"] == 190.0
+    point = row["performance"][0]
+    assert point["raw_return"] == pytest.approx(110.0 / 95.0 - 1.0)
+    assert point["benchmark_return"] == pytest.approx(209.0 / 190.0 - 1.0)
