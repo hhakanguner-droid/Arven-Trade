@@ -65,7 +65,9 @@ class AnalysisService:
             idempotency_key=idempotency_key,
             max_pending_jobs=self.max_pending_jobs,
         )
-        if created or job["status"] == "queued":
+        # Existing idempotent replays must not enqueue duplicate executor tasks.
+        # A queued row created before a process crash is scheduled by startup recovery.
+        if created:
             self._schedule(str(job["id"]))
         return job
 
