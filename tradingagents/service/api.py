@@ -8,6 +8,7 @@ import re
 from contextlib import asynccontextmanager
 from datetime import date, datetime
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, Header, HTTPException, status
@@ -18,10 +19,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from tradingagents.operations import create_production_runtime
 
 from .core import AnalysisService
-from .jobs import AnalysisJobStore, IdempotencyConflict
+from .jobs import AnalysisJobStore, IdempotencyConflict, QueueCapacityExceeded
 
 _BIST_TICKER = re.compile(r"^[A-Z0-9]{1,12}(?:\.IS)?$")
 _BEARER = HTTPBearer(auto_error=False)
+_MIN_API_TOKEN_LENGTH = 32
 
 
 class AnalysisRequest(BaseModel):
@@ -56,6 +58,19 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_positive_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a positive integer") from exc
+    if value <= 0:
+        raise RuntimeError(f"{name} must be a positive integer")
+    return value
+
+
 def _resolve_auth(api_token: str | None, auth_disabled: bool | None) -> tuple[str | None, bool]:
     disabled = (
         _env_bool("TRADINGAGENTS_API_AUTH_DISABLED", False)
@@ -68,6 +83,10 @@ def _resolve_auth(api_token: str | None, auth_disabled: bool | None) -> tuple[st
         raise RuntimeError(
             "ARVEN API authentication is enabled but TRADINGAGENTS_API_TOKEN is not configured"
         )
+    if not disabled and token and len(token) < _MIN_API_TOKEN_LENGTH:
+        raise RuntimeError(
+            f"TRADINGAGENTS_API_TOKEN must be at least {_MIN_API_TOKEN_LENGTH} characters"
+        )
     return token, disabled
 
 
@@ -75,7 +94,14 @@ def _default_service() -> AnalysisService:
     runtime = create_production_runtime()
     default_db = Path(runtime.state_dir) / "web_jobs.db"
     db_path = Path(os.getenv("TRADINGAGENTS_API_JOB_DB", str(default_db))).expanduser()
-    return AnalysisService(runtime, AnalysisJobStore(db_path))
+    max_pending = _env_positive_int("TRADINGAGENTS_API_MAX_PENDING_JOBS", 100)
+    max_terminal = _env_positive_int("TRADINGAGENTS_API_MAX_TERMINAL_JOBS", 5000)
+    return AnalysisService(
+        runtime,
+        AnalysisJobStore(db_path),
+        max_pending_jobs=max_pending,
+        max_terminal_jobs=max_terminal,
+    )
 
 
 def create_app(
@@ -132,7 +158,7 @@ def create_app(
         return {"status": "ok"}
 
     @app.get("/api/v1/health", dependencies=[Depends(require_auth)])
-    def api_health() -> dict:
+    def api_health() -> dict[str, Any]:
         return analysis_service.health()
 
     @app.post(
@@ -143,7 +169,7 @@ def create_app(
     def submit_analysis(
         request: AnalysisRequest,
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    ) -> dict:
+    ) -> dict[str, Any]:
         key = idempotency_key.strip() if idempotency_key else None
         if key and len(key) > 200:
             raise HTTPException(status_code=400, detail="Idempotency-Key is too long")
@@ -156,12 +182,14 @@ def create_app(
             )
         except IdempotencyConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except QueueCapacityExceeded as exc:
+            raise HTTPException(status_code=429, detail=str(exc)) from exc
 
     @app.get(
         "/api/v1/analyses/{job_id}",
         dependencies=[Depends(require_auth)],
     )
-    def analysis_status(job_id: str) -> dict:
+    def analysis_status(job_id: str) -> dict[str, Any]:
         job = analysis_service.get(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Analysis job not found")
