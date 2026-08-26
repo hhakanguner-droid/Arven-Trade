@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 import os
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -47,6 +49,7 @@ class ProductionRuntime:
     ):
         install_secret_redaction()
         self.graph = graph
+        self._run_lock = threading.Lock()
         config = getattr(graph, "config", {}) or {}
         default_state_dir = Path(config.get("data_cache_dir") or ".") / "operations"
         self.state_dir = Path(state_dir or default_state_dir).expanduser()
@@ -107,45 +110,58 @@ class ProductionRuntime:
         *,
         estimated_cost_usd: float | None = None,
     ):
-        """Run one guarded analysis; operational policy failures are fail-closed."""
-        guard_state = self.guard.before_run(estimated_cost_usd=estimated_cost_usd)
-        deleted = self._apply_retention()
-        logger.info(
-            "ARVEN production run start ticker=%s trade_date=%s estimated_cost_usd=%.4f "
-            "daily_spend_usd=%.4f pruned_files=%d",
-            company_name,
-            trade_date,
-            guard_state["estimated_cost_usd"],
-            guard_state["daily_spend_usd"],
-            len(deleted),
-        )
-        try:
-            result = self.graph.propagate(company_name, trade_date, asset_type=asset_type)
-        except Exception as exc:
-            logger.error(
-                "ARVEN production run failed ticker=%s trade_date=%s error_type=%s message=%s",
+        """Run one guarded analysis; shared graph execution is serialized per runtime."""
+        with self._run_lock:
+            # Retention is best-effort and runs before reservations so a cleanup
+            # problem cannot consume rate or cost budget without an analysis.
+            deleted = self._apply_retention()
+            guard_state = self.guard.before_run(estimated_cost_usd=estimated_cost_usd)
+            logger.info(
+                "ARVEN production run start ticker=%s trade_date=%s estimated_cost_usd=%.4f "
+                "daily_spend_usd=%.4f pruned_files=%d",
                 company_name,
                 trade_date,
-                type(exc).__name__,
-                redact_sensitive_text(exc),
+                guard_state["estimated_cost_usd"],
+                guard_state["daily_spend_usd"],
+                len(deleted),
             )
-            raise
-        logger.info(
-            "ARVEN production run success ticker=%s trade_date=%s",
-            company_name,
-            trade_date,
-        )
-        return result
+            try:
+                result = self.graph.propagate(
+                    company_name,
+                    trade_date,
+                    asset_type=asset_type,
+                )
+            except Exception as exc:
+                logger.error(
+                    "ARVEN production run failed ticker=%s trade_date=%s "
+                    "error_type=%s message=%s",
+                    company_name,
+                    trade_date,
+                    type(exc).__name__,
+                    redact_sensitive_text(exc),
+                )
+                raise
+            logger.info(
+                "ARVEN production run success ticker=%s trade_date=%s",
+                company_name,
+                trade_date,
+            )
+            return result
 
 
-def create_production_runtime(*args, state_dir: str | Path | None = None, **kwargs) -> ProductionRuntime:
-    """Create the canonical guarded runtime and validate credentials before LLM startup."""
+def create_production_runtime(
+    *args,
+    state_dir: str | Path | None = None,
+    **kwargs,
+) -> ProductionRuntime:
+    """Create the guarded runtime and validate the actual forwarded graph config."""
     install_secret_redaction()
 
     from tradingagents.default_config import DEFAULT_CONFIG
     from tradingagents.graph.trading_graph import TradingAgentsGraph
 
-    config = kwargs.get("config") or DEFAULT_CONFIG
+    bound = inspect.signature(TradingAgentsGraph).bind_partial(*args, **kwargs)
+    config = bound.arguments.get("config") or DEFAULT_CONFIG
     validate_provider_credentials(config)
     graph = TradingAgentsGraph(*args, **kwargs)
     return ProductionRuntime(graph, state_dir=state_dir)
