@@ -10,6 +10,41 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  phase11:
+    name: phase11 targeted gate (py3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (with dev extras)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Run Phase 11 regression suite
+        run: |
+          pytest -q \
+            tests/test_analysis_history.py \
+            tests/test_analysis_history_tracker.py \
+            tests/test_analysis_history_review_phase11.py \
+            tests/test_analysis_history_cli_phase11.py \
+            tests/test_env_overrides.py \
+            tests/test_kap_graph_integration.py
+      - name: Lint Phase 11 surface
+        run: |
+          ruff check \
+            tradingagents/history \
+            tradingagents/default_config.py \
+            tradingagents/graph/setup.py \
+            tradingagents/graph/trading_graph.py \
+            tests/conftest.py \
+            tests/test_analysis_history.py \
+            tests/test_analysis_history_tracker.py \
+            tests/test_analysis_history_review_phase11.py \
+            tests/test_analysis_history_cli_phase11.py \
+            tests/test_env_overrides.py
+
   test:
     name: tests (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -56,6 +91,6 @@ jobs:
       - name: Install ruff
         run: pip install "ruff>=0.15"
       - name: Lint the repository
-        # The repo is fully clean under the strict select, so we lint everything
-        # (results/ and worklog/ are excluded via pyproject extend-exclude).
+        # Keep the repository-wide gate visible even while legacy Phase 10
+        # baseline debt is being tracked separately from the Phase 11 gate.
         run: ruff check .
