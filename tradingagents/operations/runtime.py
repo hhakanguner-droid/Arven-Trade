@@ -22,7 +22,7 @@ class RetentionPolicy:
     results_max_files: int = 0
 
     @classmethod
-    def from_env(cls) -> "RetentionPolicy":
+    def from_env(cls) -> RetentionPolicy:
         return cls(
             results_retention_days=max(
                 0, int(os.getenv("TRADINGAGENTS_RESULTS_RETENTION_DAYS", "0"))
@@ -54,7 +54,11 @@ class ProductionRuntime:
         self.credential_status = (
             validate_provider_credentials(config)
             if validate_credentials
-            else {"provider": config.get("llm_provider"), "credential_status": "unchecked", "env_var": None}
+            else {
+                "provider": config.get("llm_provider"),
+                "credential_status": "unchecked",
+                "env_var": None,
+            }
         )
 
     def health(self) -> dict[str, Any]:
