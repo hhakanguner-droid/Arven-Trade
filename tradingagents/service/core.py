@@ -71,16 +71,25 @@ class AnalysisService:
 
     @staticmethod
     def _result_payload(result: Any) -> dict[str, Any]:
+        """Preserve the PM decision while deriving its deterministic 5-tier rating."""
+        decision = None
+        rating_hint = None
         if isinstance(result, tuple) and len(result) >= 2:
-            decision = result[1]
+            state, rating_hint = result[0], result[1]
+            if isinstance(state, dict):
+                decision = state.get("final_trade_decision")
+            if decision is None:
+                decision = rating_hint
         elif isinstance(result, dict) and "final_trade_decision" in result:
             decision = result["final_trade_decision"]
         else:
             decision = result
+
         decision_text = "" if decision is None else str(decision)
+        rating_source = decision_text or ("" if rating_hint is None else str(rating_hint))
         return {
             "decision": decision_text,
-            "rating": parse_rating(decision_text),
+            "rating": parse_rating(rating_source),
         }
 
     def _execute(self, job_id: str) -> None:
