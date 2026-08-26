@@ -11,7 +11,7 @@ from typing import Any
 from .credentials import validate_provider_credentials
 from .guard import OperationalGuard
 from .retention import prune_files
-from .security import redact_sensitive_text
+from .security import install_secret_redaction, redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +45,7 @@ class ProductionRuntime:
         retention: RetentionPolicy | None = None,
         validate_credentials: bool = True,
     ):
+        install_secret_redaction()
         self.graph = graph
         config = getattr(graph, "config", {}) or {}
         default_state_dir = Path(config.get("data_cache_dir") or ".") / "operations"
@@ -139,6 +140,8 @@ class ProductionRuntime:
 
 def create_production_runtime(*args, state_dir: str | Path | None = None, **kwargs) -> ProductionRuntime:
     """Create the canonical guarded runtime and validate credentials before LLM startup."""
+    install_secret_redaction()
+
     from tradingagents.default_config import DEFAULT_CONFIG
     from tradingagents.graph.trading_graph import TradingAgentsGraph
 
