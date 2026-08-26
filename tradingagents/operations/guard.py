@@ -1,0 +1,307 @@
+"""Persistent run-rate and cost-budget guardrails for production execution."""
+
+from __future__ import annotations
+
+import json
+import math
+import os
+import tempfile
+import time
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+
+class RateLimitExceeded(RuntimeError):
+    def __init__(self, retry_after_seconds: float):
+        self.retry_after_seconds = max(0.0, float(retry_after_seconds))
+        super().__init__(
+            f"ARVEN run rate limit exceeded; retry after {self.retry_after_seconds:.1f}s"
+        )
+
+
+class CostBudgetExceeded(RuntimeError):
+    pass
+
+
+class OperationalPolicyError(RuntimeError):
+    pass
+
+
+class OperationalStateError(RuntimeError):
+    pass
+
+
+def _finite_policy_float(value: Any, *, field: str) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise OperationalPolicyError(f"{field} must be a finite number") from exc
+    if not math.isfinite(parsed):
+        raise OperationalPolicyError(f"{field} must be a finite number")
+    return parsed
+
+
+@contextmanager
+def _state_lock(path: Path, *, timeout_seconds: float = 5.0):
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + timeout_seconds
+    fd = None
+    while fd is None:
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            try:
+                age = time.time() - lock_path.stat().st_mtime
+                if age > max(30.0, timeout_seconds * 4):
+                    lock_path.unlink(missing_ok=True)
+                    continue
+            except FileNotFoundError:
+                continue
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Timed out waiting for operational state lock: {lock_path}"
+                ) from None
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        os.close(fd)
+        lock_path.unlink(missing_ok=True)
+
+
+def _read_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
+    if not path.exists():
+        return dict(default)
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise OperationalStateError(f"Corrupt operational state: {path}") from exc
+    except OSError as exc:
+        raise OperationalStateError(f"Could not read operational state: {path}") from exc
+    if not isinstance(value, dict):
+        raise OperationalStateError(f"Invalid operational state schema: {path}")
+    return value
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, path)
+    finally:
+        if os.path.exists(tmp_name):
+            os.unlink(tmp_name)
+
+
+class RunRateLimiter:
+    """Cross-process sliding-window limiter backed by a tiny JSON state file."""
+
+    def __init__(self, path: str | Path, max_runs: int, window_seconds: float = 60.0):
+        self.path = Path(path).expanduser()
+        self.max_runs = max(0, int(max_runs))
+        self.window_seconds = max(1.0, float(window_seconds))
+
+    def acquire(self, *, now: float | None = None) -> float | None:
+        if self.max_runs <= 0:
+            return None
+        timestamp = time.time() if now is None else float(now)
+        if not math.isfinite(timestamp):
+            raise OperationalPolicyError("run timestamp must be finite")
+        cutoff = timestamp - self.window_seconds
+        with _state_lock(self.path):
+            state = _read_json(self.path, {"timestamps": []})
+            raw_values = state.get("timestamps", [])
+            if not isinstance(raw_values, list):
+                raise OperationalStateError(f"Invalid run-rate state schema: {self.path}")
+            values: list[float] = []
+            for raw in raw_values:
+                try:
+                    observed = float(raw)
+                except (TypeError, ValueError) as exc:
+                    raise OperationalStateError(
+                        f"Invalid run-rate timestamp in state: {self.path}"
+                    ) from exc
+                if not math.isfinite(observed):
+                    raise OperationalStateError(
+                        f"Non-finite run-rate timestamp in state: {self.path}"
+                    )
+                if observed > cutoff:
+                    values.append(observed)
+            values.sort()
+            if len(values) >= self.max_runs:
+                retry_after = self.window_seconds - (timestamp - values[0])
+                raise RateLimitExceeded(retry_after)
+            values.append(timestamp)
+            _write_json(self.path, {"timestamps": values})
+        return timestamp
+
+    def release(self, timestamp: float | None) -> None:
+        """Rollback a reservation if a later pre-run guard rejects the same run."""
+        if self.max_runs <= 0 or timestamp is None:
+            return
+        target = float(timestamp)
+        with _state_lock(self.path):
+            state = _read_json(self.path, {"timestamps": []})
+            raw_values = state.get("timestamps", [])
+            if not isinstance(raw_values, list):
+                raise OperationalStateError(f"Invalid run-rate state schema: {self.path}")
+            try:
+                values = [float(raw) for raw in raw_values]
+            except (TypeError, ValueError) as exc:
+                raise OperationalStateError(
+                    f"Invalid run-rate timestamp in state: {self.path}"
+                ) from exc
+            if not all(math.isfinite(value) for value in values):
+                raise OperationalStateError(
+                    f"Non-finite run-rate timestamp in state: {self.path}"
+                )
+            try:
+                values.remove(target)
+            except ValueError:
+                return
+            _write_json(self.path, {"timestamps": values})
+
+
+class DailyCostLedger:
+    """Persistent daily USD budget ledger; a non-positive limit disables blocking."""
+
+    def __init__(self, path: str | Path, daily_limit_usd: float):
+        self.path = Path(path).expanduser()
+        parsed_limit = _finite_policy_float(
+            daily_limit_usd,
+            field="daily_cost_limit_usd",
+        )
+        self.daily_limit_usd = max(0.0, parsed_limit)
+
+    @staticmethod
+    def _spent_for_day(state: dict[str, Any], current_day: str, path: Path) -> float:
+        if state.get("day") != current_day:
+            return 0.0
+        try:
+            spent = float(state.get("spent_usd", 0.0))
+        except (TypeError, ValueError) as exc:
+            raise OperationalStateError(f"Invalid cost state value: {path}") from exc
+        if not math.isfinite(spent):
+            raise OperationalStateError(f"Non-finite cost state value: {path}")
+        if spent < 0:
+            raise OperationalStateError(f"Negative cost state value: {path}")
+        return spent
+
+    def reserve(self, amount_usd: float, *, day: str | None = None) -> float:
+        amount = _finite_policy_float(amount_usd, field="amount_usd")
+        if amount < 0:
+            raise ValueError("amount_usd must be >= 0")
+        if self.daily_limit_usd <= 0:
+            return 0.0
+        current_day = day or datetime.now(timezone.utc).date().isoformat()
+        if amount == 0:
+            return self.current_spend(day=current_day)
+        with _state_lock(self.path):
+            state = _read_json(self.path, {"day": current_day, "spent_usd": 0.0})
+            spent = self._spent_for_day(state, current_day, self.path)
+            projected = spent + amount
+            if not math.isfinite(projected):
+                raise OperationalPolicyError("projected daily spend must remain finite")
+            if projected > self.daily_limit_usd + 1e-12:
+                raise CostBudgetExceeded(
+                    f"ARVEN daily cost budget exceeded: ${projected:.4f} > "
+                    f"${self.daily_limit_usd:.4f}"
+                )
+            _write_json(self.path, {"day": current_day, "spent_usd": projected})
+            return projected
+
+    def current_spend(self, *, day: str | None = None) -> float:
+        if self.daily_limit_usd <= 0:
+            return 0.0
+        current_day = day or datetime.now(timezone.utc).date().isoformat()
+        state = _read_json(self.path, {"day": current_day, "spent_usd": 0.0})
+        return self._spent_for_day(state, current_day, self.path)
+
+
+@dataclass(frozen=True)
+class OperationalPolicy:
+    max_runs_per_minute: int = 0
+    daily_cost_limit_usd: float = 0.0
+    estimated_run_cost_usd: float = 0.0
+
+    @classmethod
+    def from_env(cls) -> OperationalPolicy:
+        daily_limit = _finite_policy_float(
+            os.getenv("TRADINGAGENTS_DAILY_COST_LIMIT_USD", "0"),
+            field="TRADINGAGENTS_DAILY_COST_LIMIT_USD",
+        )
+        run_estimate = _finite_policy_float(
+            os.getenv("TRADINGAGENTS_ESTIMATED_RUN_COST_USD", "0"),
+            field="TRADINGAGENTS_ESTIMATED_RUN_COST_USD",
+        )
+        return cls(
+            max_runs_per_minute=max(
+                0, int(os.getenv("TRADINGAGENTS_MAX_RUNS_PER_MINUTE", "0"))
+            ),
+            daily_cost_limit_usd=max(0.0, daily_limit),
+            estimated_run_cost_usd=max(0.0, run_estimate),
+        )
+
+
+class OperationalGuard:
+    """Single pre-run gate used by production entry points."""
+
+    def __init__(self, state_dir: str | Path, policy: OperationalPolicy):
+        root = Path(state_dir).expanduser()
+        daily_limit = _finite_policy_float(
+            policy.daily_cost_limit_usd,
+            field="daily_cost_limit_usd",
+        )
+        run_estimate = _finite_policy_float(
+            policy.estimated_run_cost_usd,
+            field="estimated_run_cost_usd",
+        )
+        self.policy = OperationalPolicy(
+            max_runs_per_minute=max(0, int(policy.max_runs_per_minute)),
+            daily_cost_limit_usd=max(0.0, daily_limit),
+            estimated_run_cost_usd=max(0.0, run_estimate),
+        )
+        self.rate_limiter = RunRateLimiter(
+            root / "run_rate.json",
+            self.policy.max_runs_per_minute,
+            60.0,
+        )
+        self.cost_ledger = DailyCostLedger(
+            root / "daily_cost.json",
+            self.policy.daily_cost_limit_usd,
+        )
+
+    @classmethod
+    def from_env(cls, state_dir: str | Path) -> OperationalGuard:
+        return cls(state_dir, OperationalPolicy.from_env())
+
+    def before_run(self, *, estimated_cost_usd: float | None = None) -> dict[str, float]:
+        requested = 0.0
+        if estimated_cost_usd is not None:
+            requested = _finite_policy_float(
+                estimated_cost_usd,
+                field="estimated_cost_usd",
+            )
+            if requested < 0:
+                raise OperationalPolicyError("estimated_cost_usd must be >= 0")
+        estimate = max(self.policy.estimated_run_cost_usd, requested)
+        if self.policy.daily_cost_limit_usd > 0 and estimate <= 0:
+            raise OperationalPolicyError(
+                "daily cost budget is enabled but no positive per-run cost estimate is configured"
+            )
+
+        reservation = self.rate_limiter.acquire()
+        try:
+            spend = self.cost_ledger.reserve(estimate)
+        except Exception:
+            self.rate_limiter.release(reservation)
+            raise
+        return {"estimated_cost_usd": estimate, "daily_spend_usd": spend}
