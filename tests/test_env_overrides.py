@@ -26,6 +26,9 @@ def test_no_env_uses_built_in_defaults(monkeypatch):
     assert dc.DEFAULT_CONFIG["backend_url"] is None
     assert dc.DEFAULT_CONFIG["max_debate_rounds"] == 1
     assert dc.DEFAULT_CONFIG["checkpoint_enabled"] is False
+    assert dc.DEFAULT_CONFIG["analysis_history_enabled"] is True
+    assert dc.DEFAULT_CONFIG["analysis_history_horizons"] == (1, 5, 20)
+    assert dc.DEFAULT_CONFIG["analysis_history_resolve_limit"] == 10
 
 
 def test_string_overrides(monkeypatch):
@@ -88,6 +91,19 @@ def test_reasoning_thinking_overrides(monkeypatch):
 def test_kap_enabled_env_override(monkeypatch):
     dc = _reload_with_env(monkeypatch, TRADINGAGENTS_KAP_ENABLED="false")
     assert dc.DEFAULT_CONFIG["kap_enabled"] is False
+
+
+def test_analysis_history_env_overrides(monkeypatch):
+    dc = _reload_with_env(
+        monkeypatch,
+        TRADINGAGENTS_ANALYSIS_HISTORY_ENABLED="false",
+        TRADINGAGENTS_ANALYSIS_HISTORY_PATH="/tmp/arven-history.db",
+        TRADINGAGENTS_ANALYSIS_HISTORY_RESOLVE_LIMIT="25",
+    )
+
+    assert dc.DEFAULT_CONFIG["analysis_history_enabled"] is False
+    assert dc.DEFAULT_CONFIG["analysis_history_path"] == "/tmp/arven-history.db"
+    assert dc.DEFAULT_CONFIG["analysis_history_resolve_limit"] == 25
 
 
 def test_reasoning_effort_defaults_to_none(monkeypatch):
