@@ -44,9 +44,12 @@ def test_weekend_analysis_anchors_to_last_session_and_uses_bist100(tmp_path):
         return benchmark if symbol == "^XU100" else stock
 
     tracker = AnalysisHistoryTracker(_config(tmp_path), history_loader=loader)
-    entry, points = tracker._resolve_prices("THYAO.IS", "2026-08-23", (1,))
+    entry, benchmark_entry, points = tracker._resolve_prices(
+        "THYAO.IS", "2026-08-23", (1,)
+    )
 
     assert entry == 100.0
+    assert benchmark_entry == 200.0
     assert calls == ["THYAO.IS", "^XU100"]
     assert points[0].raw_return == pytest.approx(0.10)
     assert points[0].benchmark_return == pytest.approx(0.01)
@@ -61,9 +64,12 @@ def test_resolves_1_5_20_trading_session_performance(tmp_path):
         return benchmark if symbol == "^XU100" else stock
 
     tracker = AnalysisHistoryTracker(_config(tmp_path), history_loader=loader)
-    entry, points = tracker._resolve_prices("ASELS.IS", "2026-08-03", (1, 5, 20))
+    entry, benchmark_entry, points = tracker._resolve_prices(
+        "ASELS.IS", "2026-08-03", (1, 5, 20)
+    )
 
     assert entry == 100.0
+    assert benchmark_entry == 200.0
     assert [point.horizon_days for point in points] == [1, 5, 20]
     assert points[0].raw_return == pytest.approx(0.02)
     assert points[1].raw_return == pytest.approx(0.10)
@@ -92,6 +98,7 @@ def test_pending_backfill_reuses_one_stock_and_one_benchmark_fetch(tmp_path):
                 "trade_date": trade_date,
                 "final_trade_decision": "Rating: Buy",
             },
+            benchmark_ticker="^XU100",
         )
 
     tracker = AnalysisHistoryTracker(config, store=store, history_loader=loader)
@@ -99,7 +106,9 @@ def test_pending_backfill_reuses_one_stock_and_one_benchmark_fetch(tmp_path):
 
     assert updated == 6
     assert calls == ["THYAO.IS", "^XU100"]
-    assert all(len(row["performance"]) == 3 for row in store.list_analyses("THYAO.IS"))
+    rows = store.list_analyses("THYAO.IS")
+    assert all(len(row["performance"]) == 3 for row in rows)
+    assert all(row["benchmark_entry_price"] is not None for row in rows)
 
 
 def test_final_node_wrapper_records_completed_state_without_changing_result(tmp_path):
@@ -132,6 +141,8 @@ def test_final_node_wrapper_records_completed_state_without_changing_result(tmp_
     assert len(rows) == 1
     assert rows[0]["rating"] == "Buy"
     assert rows[0]["state"]["kap_report"] == "kap"
+    assert rows[0]["benchmark_ticker"] == "^XU100"
+    assert rows[0]["benchmark_entry_price"] == 200.0
 
 
 def test_disabled_history_returns_original_final_node(tmp_path):
@@ -165,6 +176,8 @@ def test_market_data_failure_does_not_lose_completed_analysis(tmp_path):
     assert len(rows) == 1
     assert rows[0]["rating"] == "Hold"
     assert rows[0]["entry_price"] is None
+    assert rows[0]["benchmark_ticker"] == "^XU100"
+    assert rows[0]["benchmark_entry_price"] is None
     assert rows[0]["performance"] == []
 
 
@@ -192,6 +205,8 @@ def test_backfill_repairs_alpha_after_transient_benchmark_failure(tmp_path):
 
     first = tracker.store.get_analysis(analysis_id)
     assert len(first["performance"]) == 3
+    assert first["benchmark_ticker"] == "^XU100"
+    assert first["benchmark_entry_price"] is None
     assert all(item["alpha_return"] is None for item in first["performance"])
 
     benchmark_available = True
@@ -199,8 +214,74 @@ def test_backfill_repairs_alpha_after_transient_benchmark_failure(tmp_path):
     repaired = tracker.store.get_analysis(analysis_id)
 
     assert updated == 3
+    assert repaired["benchmark_entry_price"] == 200.0
     assert all(item["benchmark_return"] is not None for item in repaired["performance"])
     assert all(item["alpha_return"] is not None for item in repaired["performance"])
+
+
+def test_backfill_uses_captured_intraday_entry_snapshots(tmp_path):
+    config = _config(tmp_path)
+    store = AnalysisHistoryStore(config["analysis_history_path"])
+    analysis_id = store.record_analysis(
+        ticker="THYAO.IS",
+        trade_date="2026-08-03",
+        final_decision="Rating: Buy",
+        state={
+            "company_of_interest": "THYAO.IS",
+            "trade_date": "2026-08-03",
+            "final_trade_decision": "Rating: Buy",
+        },
+        entry_price=95.0,  # captured while the session was still open
+        benchmark_ticker="^XU100",
+        benchmark_entry_price=190.0,
+    )
+    stock = [
+        (date(2026, 8, 3), 100.0),  # eventual closing price must not replace 95
+        (date(2026, 8, 4), 110.0),
+    ]
+    benchmark = [
+        (date(2026, 8, 3), 200.0),  # eventual close must not replace 190
+        (date(2026, 8, 4), 209.0),
+    ]
+
+    def loader(symbol, start, end):
+        return benchmark if symbol == "^XU100" else stock
+
+    config["analysis_history_horizons"] = (1,)
+    tracker = AnalysisHistoryTracker(config, store=store, history_loader=loader)
+    updated = tracker.resolve_pending("THYAO.IS")
+    row = store.get_analysis(analysis_id)
+
+    assert updated == 1
+    assert row["entry_price"] == 95.0
+    assert row["benchmark_entry_price"] == 190.0
+    point = row["performance"][0]
+    assert point["raw_return"] == pytest.approx(110.0 / 95.0 - 1.0)
+    assert point["benchmark_return"] == pytest.approx(209.0 / 190.0 - 1.0)
+    assert point["alpha_return"] == pytest.approx(
+        (110.0 / 95.0 - 1.0) - (209.0 / 190.0 - 1.0)
+    )
+
+
+def test_alpha_uses_benchmark_close_on_same_stock_target_date(tmp_path):
+    tracker = AnalysisHistoryTracker(_config(tmp_path), history_loader=lambda *_: [])
+    stock = [
+        (date(2026, 8, 3), 100.0),
+        (date(2026, 8, 4), 110.0),
+    ]
+    benchmark = [
+        (date(2026, 8, 3), 200.0),
+        # 2026-08-04 intentionally missing; a later 2026-08-05 bar must not be used.
+        (date(2026, 8, 5), 220.0),
+    ]
+
+    _, _, points = tracker._points_from_series(
+        "2026-08-03", (1,), stock, benchmark
+    )
+
+    assert points[0].raw_return == pytest.approx(0.10)
+    assert points[0].benchmark_return is None
+    assert points[0].alpha_return is None
 
 
 def test_store_open_failure_disables_history_instead_of_breaking_graph_init(tmp_path, monkeypatch):
