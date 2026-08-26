@@ -124,7 +124,9 @@ class AnalysisHistoryTracker:
         benchmark_ticker = self._resolve_benchmark(ticker)
         try:
             # Persist the decision first. Market data is allowed to be unavailable
-            # or temporarily broken without losing the analysis itself.
+            # or temporarily broken without losing the analysis itself. Snapshot
+            # columns are first-write-wins, so rerunning the same ticker/date does
+            # not silently move the performance baseline.
             analysis_id = self.store.record_analysis(
                 ticker=ticker,
                 trade_date=trade_date,
@@ -145,16 +147,22 @@ class AnalysisHistoryTracker:
             return None
 
         try:
+            stored = self.store.get_analysis(analysis_id) or {}
+            captured_benchmark = str(
+                stored.get("benchmark_ticker") or benchmark_ticker
+            )
             entry_price, benchmark_entry_price, points = self._resolve_prices(
                 ticker,
                 trade_date,
                 self.horizons,
-                benchmark_ticker=benchmark_ticker,
+                benchmark_ticker=captured_benchmark,
+                entry_price_override=stored.get("entry_price"),
+                benchmark_entry_price_override=stored.get("benchmark_entry_price"),
             )
             self.store.update_price_snapshots(
                 analysis_id,
                 entry_price=entry_price,
-                benchmark_ticker=benchmark_ticker,
+                benchmark_ticker=captured_benchmark,
                 benchmark_entry_price=benchmark_entry_price,
             )
             if points:
