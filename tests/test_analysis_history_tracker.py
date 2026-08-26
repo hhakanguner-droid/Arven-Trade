@@ -168,6 +168,41 @@ def test_market_data_failure_does_not_lose_completed_analysis(tmp_path):
     assert rows[0]["performance"] == []
 
 
+def test_backfill_repairs_alpha_after_transient_benchmark_failure(tmp_path):
+    stock = _business_series(date(2026, 8, 3), 25, 100.0, 1.0)
+    benchmark = _business_series(date(2026, 8, 3), 25, 200.0, 0.5)
+    benchmark_available = False
+
+    def loader(symbol, start, end):
+        if symbol == "^XU100":
+            if not benchmark_available:
+                raise RuntimeError("benchmark temporarily unavailable")
+            return benchmark
+        return stock
+
+    config = _config(tmp_path)
+    tracker = AnalysisHistoryTracker(config, history_loader=loader)
+    analysis_id = tracker.record_completed(
+        {
+            "company_of_interest": "THYAO.IS",
+            "trade_date": "2026-08-03",
+            "final_trade_decision": "Rating: Buy",
+        }
+    )
+
+    first = tracker.store.get_analysis(analysis_id)
+    assert len(first["performance"]) == 3
+    assert all(item["alpha_return"] is None for item in first["performance"])
+
+    benchmark_available = True
+    updated = tracker.resolve_pending("THYAO.IS")
+    repaired = tracker.store.get_analysis(analysis_id)
+
+    assert updated == 3
+    assert all(item["benchmark_return"] is not None for item in repaired["performance"])
+    assert all(item["alpha_return"] is not None for item in repaired["performance"])
+
+
 def test_store_open_failure_disables_history_instead_of_breaking_graph_init(tmp_path, monkeypatch):
     class FailingStore:
         def __init__(self, path):
