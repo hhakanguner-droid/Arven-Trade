@@ -104,6 +104,39 @@ def test_restart_requeues_interrupted_running_job_and_finishes(tmp_path):
         service.close()
 
 
+def test_runtime_tuple_keeps_full_pm_decision_in_job_payload():
+    full_decision = "**Rating**: Overweight\n\nPozitif katalizörler risklere ağır basıyor."
+    payload = AnalysisService._result_payload(
+        ({"final_trade_decision": full_decision}, "Overweight")
+    )
+    assert payload == {"decision": full_decision, "rating": "Overweight"}
+
+
+def test_blank_idempotency_header_behaves_like_missing_key(tmp_path):
+    service = AnalysisService(
+        _Runtime(),
+        AnalysisJobStore(tmp_path / "jobs.db"),
+        recover_incomplete=False,
+    )
+    client = TestClient(create_app(service, auth_disabled=True))
+    try:
+        body = {"ticker": "THYAO", "trade_date": "2026-08-26"}
+        first = client.post(
+            "/api/v1/analyses",
+            json=body,
+            headers={"Idempotency-Key": "   "},
+        )
+        second = client.post(
+            "/api/v1/analyses",
+            json=body,
+            headers={"Idempotency-Key": "   "},
+        )
+        assert first.status_code == second.status_code == 202
+        assert first.json()["id"] != second.json()["id"]
+    finally:
+        service.close()
+
+
 def test_all_private_api_surfaces_require_bearer_auth(tmp_path):
     token = "phase13-private-route-token-0123456789"
     service = AnalysisService(
