@@ -1,5 +1,6 @@
 """Production operational controls for ARVEN Trade."""
 
+from .credentials import ProductionConfigurationError, validate_provider_credentials
 from .guard import (
     CostBudgetExceeded,
     DailyCostLedger,
@@ -17,6 +18,7 @@ __all__ = [
     "DailyCostLedger",
     "OperationalGuard",
     "OperationalPolicy",
+    "ProductionConfigurationError",
     "ProductionRuntime",
     "RateLimitExceeded",
     "RetentionPolicy",
@@ -25,4 +27,5 @@ __all__ = [
     "create_production_runtime",
     "prune_files",
     "redact_sensitive_text",
+    "validate_provider_credentials",
 ]

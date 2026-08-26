@@ -8,7 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .guard import CostBudgetExceeded, OperationalGuard, RateLimitExceeded
+from .credentials import validate_provider_credentials
+from .guard import OperationalGuard
 from .retention import prune_files
 from .security import redact_sensitive_text
 
@@ -42,6 +43,7 @@ class ProductionRuntime:
         state_dir: str | Path | None = None,
         guard: OperationalGuard | None = None,
         retention: RetentionPolicy | None = None,
+        validate_credentials: bool = True,
     ):
         self.graph = graph
         config = getattr(graph, "config", {}) or {}
@@ -49,6 +51,37 @@ class ProductionRuntime:
         self.state_dir = Path(state_dir or default_state_dir).expanduser()
         self.guard = guard or OperationalGuard.from_env(self.state_dir)
         self.retention = retention or RetentionPolicy.from_env()
+        self.credential_status = (
+            validate_provider_credentials(config)
+            if validate_credentials
+            else {"provider": config.get("llm_provider"), "credential_status": "unchecked", "env_var": None}
+        )
+
+    def health(self) -> dict[str, Any]:
+        """Return a secret-free operational readiness snapshot."""
+        policy = self.guard.policy
+        return {
+            "credential": dict(self.credential_status),
+            "rate_limit": {
+                "enabled": policy.max_runs_per_minute > 0,
+                "max_runs_per_minute": policy.max_runs_per_minute,
+            },
+            "cost_budget": {
+                "enabled": policy.daily_cost_limit_usd > 0,
+                "daily_limit_usd": policy.daily_cost_limit_usd,
+                "estimated_run_cost_usd": policy.estimated_run_cost_usd,
+                "daily_spend_usd": self.guard.cost_ledger.current_spend(),
+            },
+            "retention": {
+                "enabled": (
+                    self.retention.results_retention_days > 0
+                    or self.retention.results_max_files > 0
+                ),
+                "results_retention_days": self.retention.results_retention_days,
+                "results_max_files": self.retention.results_max_files,
+            },
+            "state_dir": str(self.state_dir),
+        }
 
     def _apply_retention(self) -> list[Path]:
         config = getattr(self.graph, "config", {}) or {}
@@ -83,8 +116,6 @@ class ProductionRuntime:
         )
         try:
             result = self.graph.propagate(company_name, trade_date, asset_type=asset_type)
-        except (RateLimitExceeded, CostBudgetExceeded):
-            raise
         except Exception as exc:
             logger.error(
                 "ARVEN production run failed ticker=%s trade_date=%s error_type=%s message=%s",
@@ -103,8 +134,11 @@ class ProductionRuntime:
 
 
 def create_production_runtime(*args, state_dir: str | Path | None = None, **kwargs) -> ProductionRuntime:
-    """Create the canonical guarded runtime while keeping core graph compatibility."""
+    """Create the canonical guarded runtime and validate credentials before LLM startup."""
+    from tradingagents.default_config import DEFAULT_CONFIG
     from tradingagents.graph.trading_graph import TradingAgentsGraph
 
+    config = kwargs.get("config") or DEFAULT_CONFIG
+    validate_provider_credentials(config)
     graph = TradingAgentsGraph(*args, **kwargs)
     return ProductionRuntime(graph, state_dir=state_dir)
