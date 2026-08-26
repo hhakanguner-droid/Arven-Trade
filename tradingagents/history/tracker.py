@@ -121,6 +121,7 @@ class AnalysisHistoryTracker:
             return None
 
         signal = parse_rating(decision)
+        benchmark_ticker = self._resolve_benchmark(ticker)
         try:
             # Persist the decision first. Market data is allowed to be unavailable
             # or temporarily broken without losing the analysis itself.
@@ -131,6 +132,8 @@ class AnalysisHistoryTracker:
                 state=final_state,
                 signal=signal,
                 entry_price=None,
+                benchmark_ticker=benchmark_ticker,
+                benchmark_entry_price=None,
             )
         except Exception as exc:
             logger.warning(
@@ -142,18 +145,18 @@ class AnalysisHistoryTracker:
             return None
 
         try:
-            entry_price, points = self._resolve_prices(ticker, trade_date, self.horizons)
-            if entry_price is not None:
-                # Idempotent refresh fills the price snapshot while preserving the
-                # stable ticker/date analysis id.
-                self.store.record_analysis(
-                    ticker=ticker,
-                    trade_date=trade_date,
-                    final_decision=decision,
-                    state=final_state,
-                    signal=signal,
-                    entry_price=entry_price,
-                )
+            entry_price, benchmark_entry_price, points = self._resolve_prices(
+                ticker,
+                trade_date,
+                self.horizons,
+                benchmark_ticker=benchmark_ticker,
+            )
+            self.store.update_price_snapshots(
+                analysis_id,
+                entry_price=entry_price,
+                benchmark_ticker=benchmark_ticker,
+                benchmark_entry_price=benchmark_entry_price,
+            )
             if points:
                 self.store.record_performance(analysis_id, points)
         except Exception as exc:
@@ -173,11 +176,10 @@ class AnalysisHistoryTracker:
     ) -> int:
         """Fill missing 1/5/20-session outcomes, oldest pending analyses first.
 
-        When a ticker is supplied (the normal live-analysis path), all selected
-        pending rows reuse one stock-price fetch and one benchmark fetch.  This
-        keeps automatic backfill bounded and avoids starving the analysis path.
-        ``exclude_analysis_id`` avoids immediately re-fetching the analysis that
-        the final node just persisted.
+        Pending rows are grouped by stock and the benchmark identity captured at
+        analysis time. One stock fetch and one benchmark fetch are reused inside
+        each group. Stored entry snapshots are used as return denominators so an
+        intraday analysis cannot later drift to the session's final close.
         """
         if not self.enabled or self.store is None:
             return 0
@@ -201,11 +203,15 @@ class AnalysisHistoryTracker:
             return 0
 
         updated = 0
-        groups: dict[str, list[dict[str, Any]]] = {}
+        groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for row in pending:
-            groups.setdefault(str(row["ticker"]), []).append(row)
+            group_ticker = str(row["ticker"])
+            benchmark = str(
+                row.get("benchmark_ticker") or self._resolve_benchmark(group_ticker)
+            )
+            groups.setdefault((group_ticker, benchmark), []).append(row)
 
-        for group_ticker, rows in groups.items():
+        for (group_ticker, benchmark), rows in groups.items():
             try:
                 trade_days = [self._parse_trade_day(row["trade_date"]) for row in rows]
                 start = min(trade_days) - timedelta(days=10)
@@ -213,7 +219,6 @@ class AnalysisHistoryTracker:
                 end = max(date.today(), max(trade_days)) + timedelta(days=1)
                 stock_series = self._load_series(normalize_symbol(group_ticker), start, end)
 
-                benchmark = self._resolve_benchmark(group_ticker)
                 benchmark_series: list[tuple[date, float]] = []
                 try:
                     benchmark_series = self._load_series(benchmark, start, end)
@@ -230,21 +235,28 @@ class AnalysisHistoryTracker:
                     missing = tuple(h for h in self.horizons if h not in completed)
                     if not missing:
                         continue
-                    entry_price, points = self._points_from_series(
+                    entry_price, benchmark_entry_price, points = self._points_from_series(
                         row["trade_date"],
                         missing,
                         stock_series,
                         benchmark_series,
+                        entry_price_override=row.get("entry_price"),
+                        benchmark_entry_price_override=row.get("benchmark_entry_price"),
                     )
-                    if row.get("entry_price") is None and entry_price is not None:
-                        self.store.update_entry_price(row["id"], entry_price)
+                    self.store.update_price_snapshots(
+                        row["id"],
+                        entry_price=entry_price,
+                        benchmark_ticker=benchmark,
+                        benchmark_entry_price=benchmark_entry_price,
+                    )
                     if points:
                         self.store.record_performance(row["id"], points)
                         updated += len(points)
             except Exception as exc:
                 logger.warning(
-                    "Could not resolve history performance for %s: %s",
+                    "Could not resolve history performance for %s vs %s: %s",
                     group_ticker,
+                    benchmark,
                     exc,
                 )
         return updated
@@ -254,7 +266,11 @@ class AnalysisHistoryTracker:
         ticker: str,
         trade_date: str,
         horizons: Iterable[int],
-    ) -> tuple[float | None, list[PerformancePoint]]:
+        *,
+        benchmark_ticker: str | None = None,
+        entry_price_override: float | None = None,
+        benchmark_entry_price_override: float | None = None,
+    ) -> tuple[float | None, float | None, list[PerformancePoint]]:
         trade_day = self._parse_trade_day(trade_date)
         horizon_values = tuple(sorted({int(value) for value in horizons if int(value) > 0}))
         max_horizon = max(horizon_values, default=0)
@@ -267,7 +283,7 @@ class AnalysisHistoryTracker:
         stock_series = self._load_series(normalize_symbol(ticker), start, end)
 
         benchmark_series: list[tuple[date, float]] = []
-        benchmark = self._resolve_benchmark(ticker)
+        benchmark = benchmark_ticker or self._resolve_benchmark(ticker)
         try:
             benchmark_series = self._load_series(benchmark, start, end)
         except Exception as exc:
@@ -278,6 +294,8 @@ class AnalysisHistoryTracker:
             horizon_values,
             stock_series,
             benchmark_series,
+            entry_price_override=entry_price_override,
+            benchmark_entry_price_override=benchmark_entry_price_override,
         )
 
     def _points_from_series(
@@ -286,15 +304,27 @@ class AnalysisHistoryTracker:
         horizons: Iterable[int],
         stock_series: Sequence[tuple[date, float]],
         benchmark_series: Sequence[tuple[date, float]],
-    ) -> tuple[float | None, list[PerformancePoint]]:
+        *,
+        entry_price_override: float | None = None,
+        benchmark_entry_price_override: float | None = None,
+    ) -> tuple[float | None, float | None, list[PerformancePoint]]:
         trade_day = self._parse_trade_day(trade_date)
         horizon_values = tuple(sorted({int(value) for value in horizons if int(value) > 0}))
         stock_base = self._baseline_index(stock_series, trade_day)
         if stock_base is None:
-            return None, []
+            return None, None, []
 
-        entry_price = stock_series[stock_base][1]
+        observed_entry = stock_series[stock_base][1]
+        entry_price = self._positive_override(entry_price_override, observed_entry)
         benchmark_base = self._baseline_index(benchmark_series, trade_day)
+        observed_benchmark_entry = (
+            benchmark_series[benchmark_base][1] if benchmark_base is not None else None
+        )
+        benchmark_entry_price = self._positive_override(
+            benchmark_entry_price_override,
+            observed_benchmark_entry,
+        )
+        benchmark_by_day = dict(benchmark_series)
 
         points: list[PerformancePoint] = []
         for horizon in horizon_values:
@@ -302,16 +332,13 @@ class AnalysisHistoryTracker:
             if stock_target >= len(stock_series):
                 continue
 
-            raw_return = stock_series[stock_target][1] / entry_price - 1.0
+            target_day, target_close = stock_series[stock_target]
+            raw_return = target_close / entry_price - 1.0
             benchmark_return = None
-            if benchmark_base is not None:
-                benchmark_target = benchmark_base + horizon
-                if benchmark_target < len(benchmark_series):
-                    benchmark_entry = benchmark_series[benchmark_base][1]
-                    if benchmark_entry:
-                        benchmark_return = (
-                            benchmark_series[benchmark_target][1] / benchmark_entry - 1.0
-                        )
+            if benchmark_entry_price is not None:
+                benchmark_target_close = benchmark_by_day.get(target_day)
+                if benchmark_target_close is not None:
+                    benchmark_return = benchmark_target_close / benchmark_entry_price - 1.0
 
             points.append(
                 PerformancePoint(
@@ -321,7 +348,7 @@ class AnalysisHistoryTracker:
                 )
             )
 
-        return entry_price, points
+        return entry_price, benchmark_entry_price, points
 
     def _load_series(self, symbol: str, start: date, end: date) -> list[tuple[date, float]]:
         return self._normalize_series(list(self.history_loader(symbol, start, end)))
@@ -336,6 +363,17 @@ class AnalysisHistoryTracker:
             if suffix and ticker_upper.endswith(str(suffix).upper()):
                 return str(benchmark)
         return str(benchmark_map.get("", "SPY"))
+
+    @staticmethod
+    def _positive_override(value: float | None, fallback: float | None) -> float | None:
+        if value is not None:
+            numeric = float(value)
+            if numeric > 0:
+                return numeric
+        if fallback is None:
+            return None
+        numeric = float(fallback)
+        return numeric if numeric > 0 else None
 
     @staticmethod
     def _parse_trade_day(value: str) -> date:
