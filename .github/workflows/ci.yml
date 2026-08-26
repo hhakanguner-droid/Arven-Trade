@@ -27,14 +27,16 @@ jobs:
           pytest -q \
             tests/test_production_hardening_phase12.py \
             tests/test_production_runtime_phase12.py \
-            tests/test_production_credentials_phase12.py
+            tests/test_production_credentials_phase12.py \
+            tests/test_production_acceptance_phase12.py
       - name: Lint Phase 12 surface
         run: |
           ruff check \
             tradingagents/operations \
             tests/test_production_hardening_phase12.py \
             tests/test_production_runtime_phase12.py \
-            tests/test_production_credentials_phase12.py
+            tests/test_production_credentials_phase12.py \
+            tests/test_production_acceptance_phase12.py
 
   phase11:
     name: phase11 targeted gate (py3.12)
