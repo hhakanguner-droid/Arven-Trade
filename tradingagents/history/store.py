@@ -127,7 +127,12 @@ class AnalysisHistoryStore:
     ) -> int:
         """Insert or refresh one ticker/date analysis and return its stable id."""
         rating = parse_rating(final_decision)
-        payload = json.dumps(self._safe_state(state), ensure_ascii=False, sort_keys=True, default=str)
+        payload = json.dumps(
+            self._safe_state(state),
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as db:
             db.execute(
@@ -137,20 +142,36 @@ class AnalysisHistoryStore:
                     final_decision, state_json
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(ticker, trade_date) DO UPDATE SET
-                    created_at=excluded.created_at,
                     rating=excluded.rating,
                     signal=excluded.signal,
-                    entry_price=excluded.entry_price,
+                    entry_price=COALESCE(excluded.entry_price, analyses.entry_price),
                     final_decision=excluded.final_decision,
                     state_json=excluded.state_json
                 """,
-                (ticker, str(trade_date), now, rating, signal, entry_price, final_decision, payload),
+                (
+                    ticker,
+                    str(trade_date),
+                    now,
+                    rating,
+                    signal,
+                    entry_price,
+                    final_decision,
+                    payload,
+                ),
             )
             row = db.execute(
                 "SELECT id FROM analyses WHERE ticker=? AND trade_date=?",
                 (ticker, str(trade_date)),
             ).fetchone()
             return int(row["id"])
+
+    def update_entry_price(self, analysis_id: int, entry_price: float) -> None:
+        """Fill a missing entry snapshot without changing the analysis decision."""
+        with self._connect() as db:
+            db.execute(
+                "UPDATE analyses SET entry_price=? WHERE id=? AND entry_price IS NULL",
+                (float(entry_price), int(analysis_id)),
+            )
 
     def record_performance(
         self,
@@ -168,7 +189,11 @@ class AnalysisHistoryStore:
                     int(point.horizon_days),
                     stamp,
                     float(point.raw_return),
-                    None if point.benchmark_return is None else float(point.benchmark_return),
+                    (
+                        None
+                        if point.benchmark_return is None
+                        else float(point.benchmark_return)
+                    ),
                     None if point.alpha_return is None else float(point.alpha_return),
                 )
             )
@@ -190,7 +215,12 @@ class AnalysisHistoryStore:
                 rows,
             )
 
-    def list_analyses(self, ticker: str | None = None, *, limit: int = 50) -> list[dict[str, Any]]:
+    def list_analyses(
+        self,
+        ticker: str | None = None,
+        *,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit), 1000))
         sql = "SELECT * FROM analyses"
         params: list[Any] = []
@@ -203,12 +233,67 @@ class AnalysisHistoryStore:
             rows = db.execute(sql, params).fetchall()
             return [self._analysis_dict(db, row) for row in rows]
 
+    def pending_analyses(
+        self,
+        horizons: Iterable[int],
+        *,
+        ticker: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Return analyses missing at least one requested horizon, oldest first."""
+        horizon_values = tuple(
+            sorted({int(value) for value in horizons if int(value) > 0})
+        )
+        if not horizon_values:
+            return []
+
+        limit = max(1, min(int(limit), 1000))
+        placeholders = ",".join("?" for _ in horizon_values)
+        where = ""
+        params: list[Any] = list(horizon_values)
+        if ticker:
+            where = "WHERE a.ticker=?"
+            params.append(ticker)
+        params.extend([len(horizon_values), limit])
+
+        sql = f"""
+            SELECT a.id
+            FROM analyses a
+            LEFT JOIN performance p
+              ON p.analysis_id=a.id
+             AND p.horizon_days IN ({placeholders})
+            {where}
+            GROUP BY a.id
+            HAVING COUNT(DISTINCT p.horizon_days) < ?
+            ORDER BY a.trade_date ASC, a.id ASC
+            LIMIT ?
+        """
+        with self._connect() as db:
+            ids = db.execute(sql, params).fetchall()
+            results = []
+            for id_row in ids:
+                row = db.execute(
+                    "SELECT * FROM analyses WHERE id=?",
+                    (id_row["id"],),
+                ).fetchone()
+                if row:
+                    results.append(self._analysis_dict(db, row))
+            return results
+
     def get_analysis(self, analysis_id: int) -> dict[str, Any] | None:
         with self._connect() as db:
-            row = db.execute("SELECT * FROM analyses WHERE id=?", (analysis_id,)).fetchone()
+            row = db.execute(
+                "SELECT * FROM analyses WHERE id=?",
+                (analysis_id,),
+            ).fetchone()
             return self._analysis_dict(db, row) if row else None
 
-    def compare_latest(self, ticker: str, *, count: int = 2) -> list[dict[str, Any]]:
+    def compare_latest(
+        self,
+        ticker: str,
+        *,
+        count: int = 2,
+    ) -> list[dict[str, Any]]:
         return self.list_analyses(ticker, limit=max(2, count))
 
     def performance_summary(self, ticker: str | None = None) -> dict[str, Any]:
@@ -223,8 +308,17 @@ class AnalysisHistoryStore:
                 SELECT p.horizon_days,
                        COUNT(*) AS samples,
                        AVG(p.raw_return) AS avg_raw_return,
+                       AVG(p.benchmark_return) AS avg_benchmark_return,
                        AVG(p.alpha_return) AS avg_alpha_return,
-                       AVG(CASE WHEN p.raw_return > 0 THEN 1.0 ELSE 0.0 END) AS positive_rate
+                       AVG(CASE WHEN p.raw_return > 0 THEN 1.0 ELSE 0.0 END)
+                           AS positive_rate,
+                       AVG(
+                           CASE
+                               WHEN p.alpha_return IS NULL THEN NULL
+                               WHEN p.alpha_return > 0 THEN 1.0
+                               ELSE 0.0
+                           END
+                       ) AS alpha_positive_rate
                 FROM performance p
                 JOIN analyses a ON a.id=p.analysis_id
                 {where}
@@ -239,7 +333,10 @@ class AnalysisHistoryStore:
             }
 
     @staticmethod
-    def _analysis_dict(db: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
+    def _analysis_dict(
+        db: sqlite3.Connection,
+        row: sqlite3.Row,
+    ) -> dict[str, Any]:
         result = dict(row)
         result["state"] = json.loads(result.pop("state_json"))
         perf = db.execute(

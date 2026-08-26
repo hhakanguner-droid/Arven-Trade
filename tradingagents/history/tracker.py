@@ -175,7 +175,11 @@ class AnalysisHistoryTracker:
             return 0
 
         try:
-            pending = self._pending_analyses(ticker)
+            pending = self.store.pending_analyses(
+                self.horizons,
+                ticker=ticker,
+                limit=self.resolve_limit,
+            )
         except Exception as exc:
             logger.warning("Could not read pending analysis history: %s", exc)
             return 0
@@ -216,14 +220,7 @@ class AnalysisHistoryTracker:
                         benchmark_series,
                     )
                     if row.get("entry_price") is None and entry_price is not None:
-                        self.store.record_analysis(
-                            ticker=row["ticker"],
-                            trade_date=row["trade_date"],
-                            final_decision=row["final_decision"],
-                            state=row["state"],
-                            signal=row.get("signal"),
-                            entry_price=entry_price,
-                        )
+                        self.store.update_entry_price(row["id"], entry_price)
                     if points:
                         self.store.record_performance(row["id"], points)
                         updated += len(points)
@@ -234,22 +231,6 @@ class AnalysisHistoryTracker:
                     exc,
                 )
         return updated
-
-    def _pending_analyses(self, ticker: str | None) -> list[dict[str, Any]]:
-        # The Phase 11 store already exposes list_analyses(); filtering here keeps
-        # the runtime integration backwards-compatible with the first persistence
-        # package while still preferring the oldest incomplete rows.
-        rows = self.store.list_analyses(ticker, limit=1000)
-        pending = []
-        required = set(self.horizons)
-        for row in rows:
-            completed = {
-                int(item["horizon_days"]) for item in row.get("performance", [])
-            }
-            if not required.issubset(completed):
-                pending.append(row)
-        pending.sort(key=lambda row: (str(row.get("trade_date", "")), int(row.get("id", 0))))
-        return pending[: self.resolve_limit]
 
     def _resolve_prices(
         self,
