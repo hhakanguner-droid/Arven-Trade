@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import logging
 import os
 import re
 from contextlib import asynccontextmanager
@@ -11,19 +12,32 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from tradingagents.history.store import AnalysisHistoryStore
 from tradingagents.operations import create_production_runtime
+from tradingagents.operations.security import redact_sensitive_text
 
-from .core import AnalysisService
+from .core import AnalysisService, HistoryUnavailable
 from .jobs import AnalysisJobStore, IdempotencyConflict, QueueCapacityExceeded
+
+logger = logging.getLogger(__name__)
 
 _BIST_TICKER = re.compile(r"^[A-Z0-9]{1,12}(?:\.IS)?$")
 _BEARER = HTTPBearer(auto_error=False)
 _MIN_API_TOKEN_LENGTH = 32
+
+
+def _normalize_bist_ticker(value: str) -> str:
+    ticker = value.strip().upper()
+    if "." not in ticker:
+        ticker = f"{ticker}.IS"
+    if not _BIST_TICKER.fullmatch(ticker):
+        raise ValueError("ticker must be a BIST symbol such as THYAO or THYAO.IS")
+    return ticker
 
 
 class AnalysisRequest(BaseModel):
@@ -36,12 +50,7 @@ class AnalysisRequest(BaseModel):
     @field_validator("ticker")
     @classmethod
     def normalize_bist_ticker(cls, value: str) -> str:
-        ticker = value.strip().upper()
-        if "." not in ticker:
-            ticker = f"{ticker}.IS"
-        if not _BIST_TICKER.fullmatch(ticker):
-            raise ValueError("ticker must be a BIST symbol such as THYAO or THYAO.IS")
-        return ticker
+        return _normalize_bist_ticker(value)
 
     @model_validator(mode="after")
     def reject_future_trade_date(self) -> AnalysisRequest:
@@ -96,9 +105,24 @@ def _default_service() -> AnalysisService:
     db_path = Path(os.getenv("TRADINGAGENTS_API_JOB_DB", str(default_db))).expanduser()
     max_pending = _env_positive_int("TRADINGAGENTS_API_MAX_PENDING_JOBS", 100)
     max_terminal = _env_positive_int("TRADINGAGENTS_API_MAX_TERMINAL_JOBS", 5000)
+
+    history_store = None
+    config = getattr(getattr(runtime, "graph", None), "config", {}) or {}
+    history_path = config.get("analysis_history_path")
+    if config.get("analysis_history_enabled", True) and history_path:
+        try:
+            history_store = AnalysisHistoryStore(history_path)
+        except Exception as exc:  # history remains fail-open for analysis execution
+            logger.warning(
+                "ARVEN API history unavailable error_type=%s message=%s",
+                type(exc).__name__,
+                redact_sensitive_text(exc),
+            )
+
     return AnalysisService(
         runtime,
         AnalysisJobStore(db_path),
+        history_store=history_store,
         max_pending_jobs=max_pending,
         max_terminal_jobs=max_terminal,
     )
@@ -153,6 +177,17 @@ def create_app(
         if not hmac.compare_digest(credentials.credentials, token or ""):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
 
+    def query_ticker(value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            return _normalize_bist_ticker(value)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    def history_unavailable(exc: HistoryUnavailable) -> HTTPException:
+        return HTTPException(status_code=503, detail=str(exc))
+
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
         return {"status": "ok"}
@@ -194,5 +229,45 @@ def create_app(
         if job is None:
             raise HTTPException(status_code=404, detail="Analysis job not found")
         return job
+
+    @app.get("/api/v1/history", dependencies=[Depends(require_auth)])
+    def list_history(
+        ticker: str | None = Query(default=None, min_length=1, max_length=20),
+        limit: int = Query(default=50, ge=1, le=200),
+    ) -> list[dict[str, Any]]:
+        try:
+            return analysis_service.list_history(query_ticker(ticker), limit=limit)
+        except HistoryUnavailable as exc:
+            raise history_unavailable(exc) from exc
+
+    @app.get("/api/v1/history/{analysis_id}", dependencies=[Depends(require_auth)])
+    def history_detail(analysis_id: int) -> dict[str, Any]:
+        try:
+            record = analysis_service.get_history(analysis_id)
+        except HistoryUnavailable as exc:
+            raise history_unavailable(exc) from exc
+        if record is None:
+            raise HTTPException(status_code=404, detail="Analysis history record not found")
+        return record
+
+    @app.get("/api/v1/compare/{ticker}", dependencies=[Depends(require_auth)])
+    def compare_history(
+        ticker: str,
+        count: int = Query(default=2, ge=1, le=20),
+    ) -> list[dict[str, Any]]:
+        normalized = query_ticker(ticker)
+        try:
+            return analysis_service.compare_history(normalized or ticker, count=count)
+        except HistoryUnavailable as exc:
+            raise history_unavailable(exc) from exc
+
+    @app.get("/api/v1/performance", dependencies=[Depends(require_auth)])
+    def performance_summary(
+        ticker: str | None = Query(default=None, min_length=1, max_length=20),
+    ) -> dict[str, Any]:
+        try:
+            return analysis_service.performance_summary(query_ticker(ticker))
+        except HistoryUnavailable as exc:
+            raise history_unavailable(exc) from exc
 
     return app
