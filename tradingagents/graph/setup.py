@@ -22,6 +22,8 @@ from tradingagents.agents import (
     create_trader,
 )
 from tradingagents.agents.utils.agent_states import AgentState
+from tradingagents.dataflows.config import get_config
+from tradingagents.history import AnalysisHistoryTracker
 
 from .analyst_execution import build_analyst_execution_plan
 from .conditional_logic import ConditionalLogic
@@ -52,12 +54,19 @@ class GraphSetup:
         deep_thinking_llm: Any,
         tool_nodes: dict[str, ToolNode],
         conditional_logic: ConditionalLogic,
+        config: dict[str, Any] | None = None,
     ):
-        """Initialize with required components."""
+        """Initialize with required components and the owning graph config."""
         self.quick_thinking_llm = quick_thinking_llm
         self.deep_thinking_llm = deep_thinking_llm
         self.tool_nodes = tool_nodes
         self.conditional_logic = conditional_logic
+        # Normal TradingAgentsGraph callers pass their exact per-instance config.
+        # Keep get_config() only as a backwards-compatible fallback for direct
+        # GraphSetup construction so one graph cannot inherit another graph's
+        # global config accidentally.
+        history_config = config if config is not None else get_config()
+        self.analysis_history = AnalysisHistoryTracker(history_config)
 
     def setup_graph(
         self, selected_analysts=("market", "social", "news", "kap", "fundamentals")
@@ -92,7 +101,9 @@ class GraphSetup:
         aggressive_analyst = create_aggressive_debator(self.quick_thinking_llm)
         neutral_analyst = create_neutral_debator(self.quick_thinking_llm)
         conservative_analyst = create_conservative_debator(self.quick_thinking_llm)
-        portfolio_manager_node = create_portfolio_manager(self.deep_thinking_llm)
+        portfolio_manager_node = self.analysis_history.wrap_final_node(
+            create_portfolio_manager(self.deep_thinking_llm)
+        )
 
         # Create workflow
         workflow = StateGraph(AgentState)
