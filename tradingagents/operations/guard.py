@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import tempfile
 import time
@@ -31,6 +32,16 @@ class OperationalPolicyError(RuntimeError):
 
 class OperationalStateError(RuntimeError):
     pass
+
+
+def _finite_policy_float(value: Any, *, field: str) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise OperationalPolicyError(f"{field} must be a finite number") from exc
+    if not math.isfinite(parsed):
+        raise OperationalPolicyError(f"{field} must be a finite number")
+    return parsed
 
 
 @contextmanager
@@ -102,6 +113,8 @@ class RunRateLimiter:
         if self.max_runs <= 0:
             return None
         timestamp = time.time() if now is None else float(now)
+        if not math.isfinite(timestamp):
+            raise OperationalPolicyError("run timestamp must be finite")
         cutoff = timestamp - self.window_seconds
         with _state_lock(self.path):
             state = _read_json(self.path, {"timestamps": []})
@@ -116,6 +129,10 @@ class RunRateLimiter:
                     raise OperationalStateError(
                         f"Invalid run-rate timestamp in state: {self.path}"
                     ) from exc
+                if not math.isfinite(observed):
+                    raise OperationalStateError(
+                        f"Non-finite run-rate timestamp in state: {self.path}"
+                    )
                 if observed > cutoff:
                     values.append(observed)
             values.sort()
@@ -136,7 +153,16 @@ class RunRateLimiter:
             raw_values = state.get("timestamps", [])
             if not isinstance(raw_values, list):
                 raise OperationalStateError(f"Invalid run-rate state schema: {self.path}")
-            values = [float(raw) for raw in raw_values]
+            try:
+                values = [float(raw) for raw in raw_values]
+            except (TypeError, ValueError) as exc:
+                raise OperationalStateError(
+                    f"Invalid run-rate timestamp in state: {self.path}"
+                ) from exc
+            if not all(math.isfinite(value) for value in values):
+                raise OperationalStateError(
+                    f"Non-finite run-rate timestamp in state: {self.path}"
+                )
             try:
                 values.remove(target)
             except ValueError:
@@ -149,7 +175,11 @@ class DailyCostLedger:
 
     def __init__(self, path: str | Path, daily_limit_usd: float):
         self.path = Path(path).expanduser()
-        self.daily_limit_usd = max(0.0, float(daily_limit_usd))
+        parsed_limit = _finite_policy_float(
+            daily_limit_usd,
+            field="daily_cost_limit_usd",
+        )
+        self.daily_limit_usd = max(0.0, parsed_limit)
 
     @staticmethod
     def _spent_for_day(state: dict[str, Any], current_day: str, path: Path) -> float:
@@ -159,12 +189,14 @@ class DailyCostLedger:
             spent = float(state.get("spent_usd", 0.0))
         except (TypeError, ValueError) as exc:
             raise OperationalStateError(f"Invalid cost state value: {path}") from exc
+        if not math.isfinite(spent):
+            raise OperationalStateError(f"Non-finite cost state value: {path}")
         if spent < 0:
             raise OperationalStateError(f"Negative cost state value: {path}")
         return spent
 
     def reserve(self, amount_usd: float, *, day: str | None = None) -> float:
-        amount = float(amount_usd)
+        amount = _finite_policy_float(amount_usd, field="amount_usd")
         if amount < 0:
             raise ValueError("amount_usd must be >= 0")
         if self.daily_limit_usd <= 0:
@@ -176,6 +208,8 @@ class DailyCostLedger:
             state = _read_json(self.path, {"day": current_day, "spent_usd": 0.0})
             spent = self._spent_for_day(state, current_day, self.path)
             projected = spent + amount
+            if not math.isfinite(projected):
+                raise OperationalPolicyError("projected daily spend must remain finite")
             if projected > self.daily_limit_usd + 1e-12:
                 raise CostBudgetExceeded(
                     f"ARVEN daily cost budget exceeded: ${projected:.4f} > "
@@ -200,16 +234,20 @@ class OperationalPolicy:
 
     @classmethod
     def from_env(cls) -> OperationalPolicy:
+        daily_limit = _finite_policy_float(
+            os.getenv("TRADINGAGENTS_DAILY_COST_LIMIT_USD", "0"),
+            field="TRADINGAGENTS_DAILY_COST_LIMIT_USD",
+        )
+        run_estimate = _finite_policy_float(
+            os.getenv("TRADINGAGENTS_ESTIMATED_RUN_COST_USD", "0"),
+            field="TRADINGAGENTS_ESTIMATED_RUN_COST_USD",
+        )
         return cls(
             max_runs_per_minute=max(
                 0, int(os.getenv("TRADINGAGENTS_MAX_RUNS_PER_MINUTE", "0"))
             ),
-            daily_cost_limit_usd=max(
-                0.0, float(os.getenv("TRADINGAGENTS_DAILY_COST_LIMIT_USD", "0"))
-            ),
-            estimated_run_cost_usd=max(
-                0.0, float(os.getenv("TRADINGAGENTS_ESTIMATED_RUN_COST_USD", "0"))
-            ),
+            daily_cost_limit_usd=max(0.0, daily_limit),
+            estimated_run_cost_usd=max(0.0, run_estimate),
         )
 
 
@@ -218,15 +256,27 @@ class OperationalGuard:
 
     def __init__(self, state_dir: str | Path, policy: OperationalPolicy):
         root = Path(state_dir).expanduser()
-        self.policy = policy
+        daily_limit = _finite_policy_float(
+            policy.daily_cost_limit_usd,
+            field="daily_cost_limit_usd",
+        )
+        run_estimate = _finite_policy_float(
+            policy.estimated_run_cost_usd,
+            field="estimated_run_cost_usd",
+        )
+        self.policy = OperationalPolicy(
+            max_runs_per_minute=max(0, int(policy.max_runs_per_minute)),
+            daily_cost_limit_usd=max(0.0, daily_limit),
+            estimated_run_cost_usd=max(0.0, run_estimate),
+        )
         self.rate_limiter = RunRateLimiter(
             root / "run_rate.json",
-            policy.max_runs_per_minute,
+            self.policy.max_runs_per_minute,
             60.0,
         )
         self.cost_ledger = DailyCostLedger(
             root / "daily_cost.json",
-            policy.daily_cost_limit_usd,
+            self.policy.daily_cost_limit_usd,
         )
 
     @classmethod
@@ -234,10 +284,15 @@ class OperationalGuard:
         return cls(state_dir, OperationalPolicy.from_env())
 
     def before_run(self, *, estimated_cost_usd: float | None = None) -> dict[str, float]:
-        if estimated_cost_usd is not None and float(estimated_cost_usd) < 0:
-            raise OperationalPolicyError("estimated_cost_usd must be >= 0")
-        requested = 0.0 if estimated_cost_usd is None else float(estimated_cost_usd)
-        estimate = max(float(self.policy.estimated_run_cost_usd), requested)
+        requested = 0.0
+        if estimated_cost_usd is not None:
+            requested = _finite_policy_float(
+                estimated_cost_usd,
+                field="estimated_cost_usd",
+            )
+            if requested < 0:
+                raise OperationalPolicyError("estimated_cost_usd must be >= 0")
+        estimate = max(self.policy.estimated_run_cost_usd, requested)
         if self.policy.daily_cost_limit_usd > 0 and estimate <= 0:
             raise OperationalPolicyError(
                 "daily cost budget is enabled but no positive per-run cost estimate is configured"
