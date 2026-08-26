@@ -161,12 +161,12 @@ class AnalysisHistoryStore:
                 ON CONFLICT(ticker, trade_date) DO UPDATE SET
                     rating=excluded.rating,
                     signal=excluded.signal,
-                    entry_price=COALESCE(excluded.entry_price, analyses.entry_price),
+                    entry_price=COALESCE(analyses.entry_price, excluded.entry_price),
                     benchmark_ticker=COALESCE(
-                        excluded.benchmark_ticker, analyses.benchmark_ticker
+                        analyses.benchmark_ticker, excluded.benchmark_ticker
                     ),
                     benchmark_entry_price=COALESCE(
-                        excluded.benchmark_entry_price, analyses.benchmark_entry_price
+                        analyses.benchmark_entry_price, excluded.benchmark_entry_price
                     ),
                     final_decision=excluded.final_decision,
                     state_json=excluded.state_json
