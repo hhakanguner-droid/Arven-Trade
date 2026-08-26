@@ -120,7 +120,7 @@ def test_compare_latest_honors_requested_count(tmp_path):
     assert latest[0]["trade_date"] == "2026-08-26"
 
 
-def test_idempotent_refresh_does_not_erase_existing_snapshots(tmp_path):
+def test_idempotent_refresh_keeps_first_non_null_snapshots(tmp_path):
     store = AnalysisHistoryStore(tmp_path / "history.db")
     analysis_id = store.record_analysis(
         ticker="THYAO.IS",
@@ -136,13 +136,14 @@ def test_idempotent_refresh_does_not_erase_existing_snapshots(tmp_path):
         trade_date="2026-08-26",
         final_decision="Rating: Hold",
         state=_state("Rating: Hold"),
-        entry_price=None,
-        benchmark_ticker=None,
-        benchmark_entry_price=None,
+        entry_price=999.0,
+        benchmark_ticker="SPY",
+        benchmark_entry_price=99999.0,
     )
 
     assert refreshed == analysis_id
     row = store.get_analysis(analysis_id)
+    assert row["rating"] == "Hold"
     assert row["entry_price"] == 321.5
     assert row["benchmark_ticker"] == "^XU100"
     assert row["benchmark_entry_price"] == 11000.0
