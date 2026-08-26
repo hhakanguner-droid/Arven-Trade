@@ -98,6 +98,22 @@ def test_compare_latest_orders_newest_first(tmp_path):
     assert [item["trade_date"] for item in latest] == ["2026-08-26", "2026-08-24"]
 
 
+def test_compare_latest_honors_requested_count(tmp_path):
+    store = AnalysisHistoryStore(tmp_path / "history.db")
+    for trade_date in ("2026-08-20", "2026-08-24", "2026-08-26"):
+        store.record_analysis(
+            ticker="GARAN.IS",
+            trade_date=trade_date,
+            final_decision="Rating: Hold",
+            state=_state("Rating: Hold"),
+        )
+
+    latest = store.compare_latest("GARAN.IS", count=1)
+
+    assert len(latest) == 1
+    assert latest[0]["trade_date"] == "2026-08-26"
+
+
 def test_idempotent_refresh_does_not_erase_existing_entry_price(tmp_path):
     store = AnalysisHistoryStore(tmp_path / "history.db")
     analysis_id = store.record_analysis(
@@ -139,6 +155,28 @@ def test_pending_analyses_returns_oldest_rows_missing_requested_horizons(tmp_pat
 
     assert [row["id"] for row in pending] == [older, newer]
     assert [p["horizon_days"] for p in pending[0]["performance"]] == [1]
+
+
+def test_pending_analyses_retries_horizon_with_missing_alpha(tmp_path):
+    store = AnalysisHistoryStore(tmp_path / "history.db")
+    analysis_id = store.record_analysis(
+        ticker="THYAO.IS",
+        trade_date="2026-08-20",
+        final_decision="Rating: Buy",
+        state=_state(),
+    )
+    store.record_performance(
+        analysis_id,
+        [
+            PerformancePoint(1, 0.01, None),
+            PerformancePoint(5, 0.02, 0.01),
+            PerformancePoint(20, 0.03, 0.01),
+        ],
+    )
+
+    pending = store.pending_analyses((1, 5, 20), ticker="THYAO.IS")
+
+    assert [row["id"] for row in pending] == [analysis_id]
 
 
 def test_update_entry_price_only_fills_missing_snapshot(tmp_path):
