@@ -6,6 +6,8 @@ from .guard import (
     DailyCostLedger,
     OperationalGuard,
     OperationalPolicy,
+    OperationalPolicyError,
+    OperationalStateError,
     RateLimitExceeded,
     RunRateLimiter,
 )
@@ -18,6 +20,8 @@ __all__ = [
     "DailyCostLedger",
     "OperationalGuard",
     "OperationalPolicy",
+    "OperationalPolicyError",
+    "OperationalStateError",
     "ProductionConfigurationError",
     "ProductionRuntime",
     "RateLimitExceeded",
