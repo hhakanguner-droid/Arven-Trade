@@ -13,7 +13,7 @@ from .guard import (
 )
 from .retention import prune_files
 from .runtime import ProductionRuntime, RetentionPolicy, create_production_runtime
-from .security import SecretRedactionFilter, redact_sensitive_text
+from .security import SecretRedactionFilter, install_secret_redaction, redact_sensitive_text
 
 __all__ = [
     "CostBudgetExceeded",
@@ -29,6 +29,7 @@ __all__ = [
     "RunRateLimiter",
     "SecretRedactionFilter",
     "create_production_runtime",
+    "install_secret_redaction",
     "prune_files",
     "redact_sensitive_text",
     "validate_provider_credentials",
