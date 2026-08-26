@@ -167,6 +167,8 @@ class DailyCostLedger:
         amount = float(amount_usd)
         if amount < 0:
             raise ValueError("amount_usd must be >= 0")
+        if self.daily_limit_usd <= 0:
+            return 0.0
         current_day = day or datetime.now(timezone.utc).date().isoformat()
         if amount == 0:
             return self.current_spend(day=current_day)
@@ -174,7 +176,7 @@ class DailyCostLedger:
             state = _read_json(self.path, {"day": current_day, "spent_usd": 0.0})
             spent = self._spent_for_day(state, current_day, self.path)
             projected = spent + amount
-            if self.daily_limit_usd > 0 and projected > self.daily_limit_usd + 1e-12:
+            if projected > self.daily_limit_usd + 1e-12:
                 raise CostBudgetExceeded(
                     f"ARVEN daily cost budget exceeded: ${projected:.4f} > "
                     f"${self.daily_limit_usd:.4f}"
@@ -183,6 +185,8 @@ class DailyCostLedger:
             return projected
 
     def current_spend(self, *, day: str | None = None) -> float:
+        if self.daily_limit_usd <= 0:
+            return 0.0
         current_day = day or datetime.now(timezone.utc).date().isoformat()
         state = _read_json(self.path, {"day": current_day, "spent_usd": 0.0})
         return self._spent_for_day(state, current_day, self.path)
