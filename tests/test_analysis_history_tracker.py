@@ -144,3 +144,37 @@ def test_disabled_history_returns_original_final_node(tmp_path):
 
     assert tracker.wrap_final_node(final_node) is final_node
     assert tracker.list_analyses("THYAO.IS") == []
+
+
+def test_market_data_failure_does_not_lose_completed_analysis(tmp_path):
+    def loader(symbol, start, end):
+        raise RuntimeError("market feed down")
+
+    tracker = AnalysisHistoryTracker(_config(tmp_path), history_loader=loader)
+    analysis_id = tracker.record_completed(
+        {
+            "company_of_interest": "THYAO.IS",
+            "trade_date": "2026-08-26",
+            "market_report": "market",
+            "final_trade_decision": "Rating: Hold\nWait",
+        }
+    )
+
+    assert analysis_id is not None
+    rows = tracker.list_analyses("THYAO.IS")
+    assert len(rows) == 1
+    assert rows[0]["rating"] == "Hold"
+    assert rows[0]["entry_price"] is None
+    assert rows[0]["performance"] == []
+
+
+def test_store_open_failure_disables_history_instead_of_breaking_graph_init(tmp_path, monkeypatch):
+    class FailingStore:
+        def __init__(self, path):
+            raise OSError("read-only filesystem")
+
+    monkeypatch.setattr("tradingagents.history.tracker.AnalysisHistoryStore", FailingStore)
+    tracker = AnalysisHistoryTracker(_config(tmp_path))
+
+    assert tracker.enabled is False
+    assert tracker.store is None

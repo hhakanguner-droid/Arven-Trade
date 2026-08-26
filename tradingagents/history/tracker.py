@@ -54,7 +54,14 @@ class AnalysisHistoryTracker:
         path = config.get("analysis_history_path") or (
             Path.home() / ".tradingagents" / "history" / "analysis_history.db"
         )
-        self.store = store or AnalysisHistoryStore(path)
+        try:
+            self.store = store or AnalysisHistoryStore(path)
+        except Exception as exc:
+            # History is an additive feature. A read-only home directory or a
+            # damaged SQLite file must not prevent the trading graph from starting.
+            logger.warning("Analysis history disabled because the store could not open: %s", exc)
+            self.enabled = False
+            self.store = store
 
     def wrap_final_node(self, node):
         """Wrap the final graph node without changing its returned state delta.
@@ -112,20 +119,19 @@ class AnalysisHistoryTracker:
         if not ticker or not trade_date or not decision:
             return None
 
+        signal = parse_rating(decision)
         try:
-            entry_price, points = self._resolve_prices(ticker, trade_date, self.horizons)
+            # Persist the decision first. Market data is allowed to be unavailable
+            # or temporarily broken without losing the analysis itself.
             analysis_id = self.store.record_analysis(
                 ticker=ticker,
                 trade_date=trade_date,
                 final_decision=decision,
                 state=final_state,
-                signal=parse_rating(decision),
-                entry_price=entry_price,
+                signal=signal,
+                entry_price=None,
             )
-            if points:
-                self.store.record_performance(analysis_id, points)
-            return analysis_id
-        except Exception as exc:  # history is additive; never fail the core analysis
+        except Exception as exc:
             logger.warning(
                 "Could not persist analysis history for %s on %s: %s",
                 ticker,
@@ -133,6 +139,30 @@ class AnalysisHistoryTracker:
                 exc,
             )
             return None
+
+        try:
+            entry_price, points = self._resolve_prices(ticker, trade_date, self.horizons)
+            if entry_price is not None:
+                # Idempotent refresh fills the price snapshot while preserving the
+                # stable ticker/date analysis id.
+                self.store.record_analysis(
+                    ticker=ticker,
+                    trade_date=trade_date,
+                    final_decision=decision,
+                    state=final_state,
+                    signal=signal,
+                    entry_price=entry_price,
+                )
+            if points:
+                self.store.record_performance(analysis_id, points)
+        except Exception as exc:
+            logger.warning(
+                "Analysis history saved for %s on %s, but price/performance resolution failed: %s",
+                ticker,
+                trade_date,
+                exc,
+            )
+        return analysis_id
 
     def resolve_pending(self, ticker: str | None = None) -> int:
         """Fill missing 1/5/20-session outcomes, oldest pending analyses first.
