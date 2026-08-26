@@ -16,7 +16,8 @@ def prune_files(
     """Delete old/excess regular files beneath root and return deleted paths.
 
     A non-positive retention_days or max_files disables that respective rule.
-    Symlinks are never followed or deleted.
+    Symlinks are never followed or deleted. Individual deletion failures are
+    best-effort so retention cannot block an analysis run.
     """
     base = Path(root).expanduser()
     if not base.exists():
@@ -50,7 +51,7 @@ def prune_files(
     for path in sorted(to_delete, key=str):
         try:
             path.unlink()
-        except FileNotFoundError:
+        except OSError:
             continue
         deleted.append(path)
     return deleted
