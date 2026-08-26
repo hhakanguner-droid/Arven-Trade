@@ -25,6 +25,14 @@ class CostBudgetExceeded(RuntimeError):
     pass
 
 
+class OperationalPolicyError(RuntimeError):
+    pass
+
+
+class OperationalStateError(RuntimeError):
+    pass
+
+
 @contextmanager
 def _state_lock(path: Path, *, timeout_seconds: float = 5.0):
     lock_path = path.with_suffix(path.suffix + ".lock")
@@ -59,9 +67,13 @@ def _read_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
         return dict(default)
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return dict(default)
-    return value if isinstance(value, dict) else dict(default)
+    except json.JSONDecodeError as exc:
+        raise OperationalStateError(f"Corrupt operational state: {path}") from exc
+    except OSError as exc:
+        raise OperationalStateError(f"Could not read operational state: {path}") from exc
+    if not isinstance(value, dict):
+        raise OperationalStateError(f"Invalid operational state schema: {path}")
+    return value
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -86,26 +98,49 @@ class RunRateLimiter:
         self.max_runs = max(0, int(max_runs))
         self.window_seconds = max(1.0, float(window_seconds))
 
-    def acquire(self, *, now: float | None = None) -> None:
+    def acquire(self, *, now: float | None = None) -> float | None:
         if self.max_runs <= 0:
-            return
+            return None
         timestamp = time.time() if now is None else float(now)
         cutoff = timestamp - self.window_seconds
         with _state_lock(self.path):
             state = _read_json(self.path, {"timestamps": []})
-            values = []
-            for raw in state.get("timestamps", []):
+            raw_values = state.get("timestamps", [])
+            if not isinstance(raw_values, list):
+                raise OperationalStateError(f"Invalid run-rate state schema: {self.path}")
+            values: list[float] = []
+            for raw in raw_values:
                 try:
                     observed = float(raw)
-                except (TypeError, ValueError):
-                    continue
-                if observed > cutoff and observed <= timestamp + 1.0:
+                except (TypeError, ValueError) as exc:
+                    raise OperationalStateError(
+                        f"Invalid run-rate timestamp in state: {self.path}"
+                    ) from exc
+                if observed > cutoff:
                     values.append(observed)
             values.sort()
             if len(values) >= self.max_runs:
                 retry_after = self.window_seconds - (timestamp - values[0])
                 raise RateLimitExceeded(retry_after)
             values.append(timestamp)
+            _write_json(self.path, {"timestamps": values})
+        return timestamp
+
+    def release(self, timestamp: float | None) -> None:
+        """Rollback a reservation if a later pre-run guard rejects the same run."""
+        if self.max_runs <= 0 or timestamp is None:
+            return
+        target = float(timestamp)
+        with _state_lock(self.path):
+            state = _read_json(self.path, {"timestamps": []})
+            raw_values = state.get("timestamps", [])
+            if not isinstance(raw_values, list):
+                raise OperationalStateError(f"Invalid run-rate state schema: {self.path}")
+            values = [float(raw) for raw in raw_values]
+            try:
+                values.remove(target)
+            except ValueError:
+                return
             _write_json(self.path, {"timestamps": values})
 
 
@@ -116,16 +151,28 @@ class DailyCostLedger:
         self.path = Path(path).expanduser()
         self.daily_limit_usd = max(0.0, float(daily_limit_usd))
 
+    @staticmethod
+    def _spent_for_day(state: dict[str, Any], current_day: str, path: Path) -> float:
+        if state.get("day") != current_day:
+            return 0.0
+        try:
+            spent = float(state.get("spent_usd", 0.0))
+        except (TypeError, ValueError) as exc:
+            raise OperationalStateError(f"Invalid cost state value: {path}") from exc
+        if spent < 0:
+            raise OperationalStateError(f"Negative cost state value: {path}")
+        return spent
+
     def reserve(self, amount_usd: float, *, day: str | None = None) -> float:
         amount = float(amount_usd)
         if amount < 0:
             raise ValueError("amount_usd must be >= 0")
-        if amount == 0:
-            return self.current_spend(day=day)
         current_day = day or datetime.now(timezone.utc).date().isoformat()
+        if amount == 0:
+            return self.current_spend(day=current_day)
         with _state_lock(self.path):
             state = _read_json(self.path, {"day": current_day, "spent_usd": 0.0})
-            spent = float(state.get("spent_usd", 0.0)) if state.get("day") == current_day else 0.0
+            spent = self._spent_for_day(state, current_day, self.path)
             projected = spent + amount
             if self.daily_limit_usd > 0 and projected > self.daily_limit_usd + 1e-12:
                 raise CostBudgetExceeded(
@@ -138,12 +185,7 @@ class DailyCostLedger:
     def current_spend(self, *, day: str | None = None) -> float:
         current_day = day or datetime.now(timezone.utc).date().isoformat()
         state = _read_json(self.path, {"day": current_day, "spent_usd": 0.0})
-        if state.get("day") != current_day:
-            return 0.0
-        try:
-            return max(0.0, float(state.get("spent_usd", 0.0)))
-        except (TypeError, ValueError):
-            return 0.0
+        return self._spent_for_day(state, current_day, self.path)
 
 
 @dataclass(frozen=True)
@@ -188,11 +230,19 @@ class OperationalGuard:
         return cls(state_dir, OperationalPolicy.from_env())
 
     def before_run(self, *, estimated_cost_usd: float | None = None) -> dict[str, float]:
-        self.rate_limiter.acquire()
-        estimate = (
-            self.policy.estimated_run_cost_usd
-            if estimated_cost_usd is None
-            else max(0.0, float(estimated_cost_usd))
-        )
-        spend = self.cost_ledger.reserve(estimate)
+        if estimated_cost_usd is not None and float(estimated_cost_usd) < 0:
+            raise OperationalPolicyError("estimated_cost_usd must be >= 0")
+        requested = 0.0 if estimated_cost_usd is None else float(estimated_cost_usd)
+        estimate = max(float(self.policy.estimated_run_cost_usd), requested)
+        if self.policy.daily_cost_limit_usd > 0 and estimate <= 0:
+            raise OperationalPolicyError(
+                "daily cost budget is enabled but no positive per-run cost estimate is configured"
+            )
+
+        reservation = self.rate_limiter.acquire()
+        try:
+            spend = self.cost_ledger.reserve(estimate)
+        except Exception:
+            self.rate_limiter.release(reservation)
+            raise
         return {"estimated_cost_usd": estimate, "daily_spend_usd": spend}
