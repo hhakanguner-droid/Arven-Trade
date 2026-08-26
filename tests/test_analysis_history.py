@@ -1,3 +1,5 @@
+import sqlite3
+
 from tradingagents.history.store import AnalysisHistoryStore, PerformancePoint
 
 
@@ -20,6 +22,8 @@ def test_records_and_reads_analysis(tmp_path):
         state=_state(),
         signal="BUY",
         entry_price=321.5,
+        benchmark_ticker="^XU100",
+        benchmark_entry_price=10950.0,
     )
 
     row = store.get_analysis(analysis_id)
@@ -27,6 +31,8 @@ def test_records_and_reads_analysis(tmp_path):
     assert row["rating"] == "Buy"
     assert row["signal"] == "BUY"
     assert row["entry_price"] == 321.5
+    assert row["benchmark_ticker"] == "^XU100"
+    assert row["benchmark_entry_price"] == 10950.0
     assert row["state"]["kap_report"] == "kap"
 
 
@@ -114,7 +120,7 @@ def test_compare_latest_honors_requested_count(tmp_path):
     assert latest[0]["trade_date"] == "2026-08-26"
 
 
-def test_idempotent_refresh_does_not_erase_existing_entry_price(tmp_path):
+def test_idempotent_refresh_does_not_erase_existing_snapshots(tmp_path):
     store = AnalysisHistoryStore(tmp_path / "history.db")
     analysis_id = store.record_analysis(
         ticker="THYAO.IS",
@@ -122,6 +128,8 @@ def test_idempotent_refresh_does_not_erase_existing_entry_price(tmp_path):
         final_decision="Rating: Buy",
         state=_state(),
         entry_price=321.5,
+        benchmark_ticker="^XU100",
+        benchmark_entry_price=11000.0,
     )
     refreshed = store.record_analysis(
         ticker="THYAO.IS",
@@ -129,10 +137,15 @@ def test_idempotent_refresh_does_not_erase_existing_entry_price(tmp_path):
         final_decision="Rating: Hold",
         state=_state("Rating: Hold"),
         entry_price=None,
+        benchmark_ticker=None,
+        benchmark_entry_price=None,
     )
 
     assert refreshed == analysis_id
-    assert store.get_analysis(analysis_id)["entry_price"] == 321.5
+    row = store.get_analysis(analysis_id)
+    assert row["entry_price"] == 321.5
+    assert row["benchmark_ticker"] == "^XU100"
+    assert row["benchmark_entry_price"] == 11000.0
 
 
 def test_pending_analyses_returns_oldest_rows_missing_requested_horizons(tmp_path):
@@ -179,7 +192,7 @@ def test_pending_analyses_retries_horizon_with_missing_alpha(tmp_path):
     assert [row["id"] for row in pending] == [analysis_id]
 
 
-def test_update_entry_price_only_fills_missing_snapshot(tmp_path):
+def test_update_price_snapshots_only_fills_missing_values(tmp_path):
     store = AnalysisHistoryStore(tmp_path / "history.db")
     analysis_id = store.record_analysis(
         ticker="ASELS.IS",
@@ -188,10 +201,23 @@ def test_update_entry_price_only_fills_missing_snapshot(tmp_path):
         state=_state("Rating: Hold"),
     )
 
-    store.update_entry_price(analysis_id, 101.25)
-    store.update_entry_price(analysis_id, 999.0)
+    store.update_price_snapshots(
+        analysis_id,
+        entry_price=101.25,
+        benchmark_ticker="^XU100",
+        benchmark_entry_price=10800.0,
+    )
+    store.update_price_snapshots(
+        analysis_id,
+        entry_price=999.0,
+        benchmark_ticker="SPY",
+        benchmark_entry_price=99999.0,
+    )
 
-    assert store.get_analysis(analysis_id)["entry_price"] == 101.25
+    row = store.get_analysis(analysis_id)
+    assert row["entry_price"] == 101.25
+    assert row["benchmark_ticker"] == "^XU100"
+    assert row["benchmark_entry_price"] == 10800.0
 
 
 def test_idempotent_refresh_preserves_original_created_at(tmp_path):
@@ -213,3 +239,54 @@ def test_idempotent_refresh_preserves_original_created_at(tmp_path):
     )
 
     assert store.get_analysis(analysis_id)["created_at"] == created_at
+
+
+def test_v1_database_migrates_to_benchmark_snapshot_columns(tmp_path):
+    path = tmp_path / "history-v1.db"
+    db = sqlite3.connect(path)
+    db.executescript(
+        """
+        CREATE TABLE analyses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker TEXT NOT NULL,
+            trade_date TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            rating TEXT NOT NULL,
+            signal TEXT,
+            entry_price REAL,
+            final_decision TEXT NOT NULL,
+            state_json TEXT NOT NULL,
+            UNIQUE(ticker, trade_date)
+        );
+        CREATE TABLE performance (
+            analysis_id INTEGER NOT NULL,
+            horizon_days INTEGER NOT NULL,
+            measured_at TEXT NOT NULL,
+            raw_return REAL NOT NULL,
+            benchmark_return REAL,
+            alpha_return REAL,
+            PRIMARY KEY (analysis_id, horizon_days)
+        );
+        """
+    )
+    db.commit()
+    db.close()
+
+    store = AnalysisHistoryStore(path)
+    analysis_id = store.record_analysis(
+        ticker="THYAO.IS",
+        trade_date="2026-08-26",
+        final_decision="Rating: Buy",
+        state=_state(),
+        benchmark_ticker="^XU100",
+        benchmark_entry_price=11000.0,
+    )
+
+    row = store.get_analysis(analysis_id)
+    assert row["benchmark_ticker"] == "^XU100"
+    assert row["benchmark_entry_price"] == 11000.0
+    with sqlite3.connect(path) as check:
+        version = check.execute(
+            "SELECT value FROM schema_meta WHERE key='schema_version'"
+        ).fetchone()[0]
+    assert version == "2"
