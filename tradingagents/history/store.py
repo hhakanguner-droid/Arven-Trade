@@ -34,7 +34,7 @@ class PerformancePoint:
 class AnalysisHistoryStore:
     """Durable analysis history with deterministic SQLite schema migrations."""
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     def __init__(self, path: str | Path):
         self.path = Path(path).expanduser()
@@ -70,6 +70,8 @@ class AnalysisHistoryStore:
                     rating TEXT NOT NULL,
                     signal TEXT,
                     entry_price REAL,
+                    benchmark_ticker TEXT,
+                    benchmark_entry_price REAL,
                     final_decision TEXT NOT NULL,
                     state_json TEXT NOT NULL,
                     UNIQUE(ticker, trade_date)
@@ -90,6 +92,19 @@ class AnalysisHistoryStore:
                 );
                 """
             )
+
+            # v2 stores the benchmark identity and its entry snapshot so later
+            # backfills can use the exact prices observed when the analysis was
+            # created (important for analyses run while a session is still open).
+            columns = {
+                str(row["name"])
+                for row in db.execute("PRAGMA table_info(analyses)").fetchall()
+            }
+            if "benchmark_ticker" not in columns:
+                db.execute("ALTER TABLE analyses ADD COLUMN benchmark_ticker TEXT")
+            if "benchmark_entry_price" not in columns:
+                db.execute("ALTER TABLE analyses ADD COLUMN benchmark_entry_price REAL")
+
             db.execute(
                 "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -124,6 +139,8 @@ class AnalysisHistoryStore:
         state: dict[str, Any],
         signal: str | None = None,
         entry_price: float | None = None,
+        benchmark_ticker: str | None = None,
+        benchmark_entry_price: float | None = None,
     ) -> int:
         """Insert or refresh one ticker/date analysis and return its stable id."""
         rating = parse_rating(final_decision)
@@ -139,12 +156,18 @@ class AnalysisHistoryStore:
                 """
                 INSERT INTO analyses(
                     ticker, trade_date, created_at, rating, signal, entry_price,
-                    final_decision, state_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    benchmark_ticker, benchmark_entry_price, final_decision, state_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(ticker, trade_date) DO UPDATE SET
                     rating=excluded.rating,
                     signal=excluded.signal,
                     entry_price=COALESCE(excluded.entry_price, analyses.entry_price),
+                    benchmark_ticker=COALESCE(
+                        excluded.benchmark_ticker, analyses.benchmark_ticker
+                    ),
+                    benchmark_entry_price=COALESCE(
+                        excluded.benchmark_entry_price, analyses.benchmark_entry_price
+                    ),
                     final_decision=excluded.final_decision,
                     state_json=excluded.state_json
                 """,
@@ -155,6 +178,8 @@ class AnalysisHistoryStore:
                     rating,
                     signal,
                     entry_price,
+                    benchmark_ticker,
+                    benchmark_entry_price,
                     final_decision,
                     payload,
                 ),
@@ -165,13 +190,40 @@ class AnalysisHistoryStore:
             ).fetchone()
             return int(row["id"])
 
-    def update_entry_price(self, analysis_id: int, entry_price: float) -> None:
-        """Fill a missing entry snapshot without changing the analysis decision."""
+    def update_price_snapshots(
+        self,
+        analysis_id: int,
+        *,
+        entry_price: float | None = None,
+        benchmark_ticker: str | None = None,
+        benchmark_entry_price: float | None = None,
+    ) -> None:
+        """Fill missing stock/benchmark snapshots without changing a decision."""
+        assignments: list[str] = []
+        params: list[Any] = []
+        if entry_price is not None:
+            assignments.append("entry_price=COALESCE(entry_price, ?)")
+            params.append(float(entry_price))
+        if benchmark_ticker:
+            assignments.append("benchmark_ticker=COALESCE(benchmark_ticker, ?)")
+            params.append(str(benchmark_ticker))
+        if benchmark_entry_price is not None:
+            assignments.append(
+                "benchmark_entry_price=COALESCE(benchmark_entry_price, ?)"
+            )
+            params.append(float(benchmark_entry_price))
+        if not assignments:
+            return
+        params.append(int(analysis_id))
         with self._connect() as db:
             db.execute(
-                "UPDATE analyses SET entry_price=? WHERE id=? AND entry_price IS NULL",
-                (float(entry_price), int(analysis_id)),
+                f"UPDATE analyses SET {', '.join(assignments)} WHERE id=?",
+                params,
             )
+
+    def update_entry_price(self, analysis_id: int, entry_price: float) -> None:
+        """Backwards-compatible helper for callers that only fill stock price."""
+        self.update_price_snapshots(analysis_id, entry_price=entry_price)
 
     def record_performance(
         self,
