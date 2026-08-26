@@ -208,7 +208,7 @@ def create_app(
         request: AnalysisRequest,
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     ) -> dict[str, Any]:
-        key = idempotency_key.strip() if idempotency_key else None
+        key = (idempotency_key or "").strip() or None
         if key and len(key) > 200:
             raise HTTPException(status_code=400, detail="Idempotency-Key is too long")
         try:
