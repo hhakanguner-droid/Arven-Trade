@@ -62,6 +62,36 @@
     "bear",
     "risk"
   ],
+  "kap_feed": {
+    "menu_label": "KAP Açıklamaları",
+    "required": true,
+    "analysis_card_required": true,
+    "chronological_menu_required": true,
+    "group_by_day": true,
+    "newest_first": true,
+    "current_real_scope": ["watchlist_tickers", "analyzed_tickers"],
+    "required_fields": [
+      "published_at",
+      "ticker",
+      "company",
+      "title_or_subject",
+      "summary",
+      "official_url"
+    ],
+    "optional_fields_when_available": [
+      "category",
+      "severity",
+      "score",
+      "is_corrective",
+      "has_attachment"
+    ],
+    "filters": ["date", "ticker", "category", "severity"],
+    "browser_route_target": "/api/arven/kap/disclosures",
+    "browser_route_requires_real_upstream": true,
+    "market_wide_all_bist_requires_backend_feed": true,
+    "must_not_fake_market_wide_feed": true,
+    "must_not_show_demo_disclosures": true
+  },
   "release": {
     "record_synced_git_sha": true,
     "automatic_git_to_sites_sync_assumed": false
