@@ -2,6 +2,7 @@ from datetime import date
 
 import pytest
 
+from tradingagents.graph.setup import GraphSetup
 from tradingagents.history import AnalysisHistoryTracker
 
 
@@ -108,3 +109,12 @@ def test_same_day_rerun_reuses_original_benchmark_and_entry_snapshots(tmp_path):
     point = row["performance"][0]
     assert point["raw_return"] == pytest.approx(110.0 / 95.0 - 1.0)
     assert point["benchmark_return"] == pytest.approx(209.0 / 190.0 - 1.0)
+
+
+def test_graph_setup_prefers_explicit_instance_history_config(tmp_path):
+    config = _config(tmp_path)
+    config["analysis_history_enabled"] = False
+
+    setup = GraphSetup(None, None, {}, None, config=config)
+
+    assert setup.analysis_history.enabled is False
