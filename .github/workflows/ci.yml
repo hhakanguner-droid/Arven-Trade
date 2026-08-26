@@ -23,12 +23,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev,web]"
       - name: Run Phase 13 web API tests
-        run: pytest -q tests/test_web_api_phase13.py
+        run: |
+          pytest -q \
+            tests/test_web_api_phase13.py \
+            tests/test_web_api_phase13_resilience.py
       - name: Lint Phase 13 surface
         run: |
           ruff check \
             tradingagents/service \
-            tests/test_web_api_phase13.py
+            tests/test_web_api_phase13.py \
+            tests/test_web_api_phase13_resilience.py
 
   phase12:
     name: phase12 production hardening gate (py3.12)
