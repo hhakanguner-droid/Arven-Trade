@@ -76,6 +76,24 @@ def test_phase14_analysis_and_error_states_are_explicit():
     assert {401, 403, 404, 409, 429, 500, 503} <= set(contract["required_error_states"])
 
 
+def test_phase14_kap_is_both_analysis_card_and_daily_menu_without_fake_market_feed():
+    kap = _contract()["kap_feed"]
+    assert kap["menu_label"] == "KAP Açıklamaları"
+    assert kap["required"] is True
+    assert kap["analysis_card_required"] is True
+    assert kap["chronological_menu_required"] is True
+    assert kap["group_by_day"] is True
+    assert kap["newest_first"] is True
+    assert {"watchlist_tickers", "analyzed_tickers"} <= set(kap["current_real_scope"])
+    assert kap["browser_route_requires_real_upstream"] is True
+    assert kap["market_wide_all_bist_requires_backend_feed"] is True
+    assert kap["must_not_fake_market_wide_feed"] is True
+    assert kap["must_not_show_demo_disclosures"] is True
+    assert {"published_at", "ticker", "company", "title_or_subject", "summary", "official_url"} <= set(
+        kap["required_fields"]
+    )
+
+
 def test_phase14_release_bookkeeping_does_not_assume_auto_sync():
     release = _contract()["release"]
     assert release["record_synced_git_sha"] is True
