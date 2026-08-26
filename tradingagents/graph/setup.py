@@ -22,6 +22,8 @@ from tradingagents.agents import (
     create_trader,
 )
 from tradingagents.agents.utils.agent_states import AgentState
+from tradingagents.dataflows.config import get_config
+from tradingagents.history import AnalysisHistoryTracker
 
 from .analyst_execution import build_analyst_execution_plan
 from .conditional_logic import ConditionalLogic
@@ -58,6 +60,9 @@ class GraphSetup:
         self.deep_thinking_llm = deep_thinking_llm
         self.tool_nodes = tool_nodes
         self.conditional_logic = conditional_logic
+        # TradingAgentsGraph calls set_config() before constructing GraphSetup,
+        # so this snapshot includes per-run overrides rather than only defaults.
+        self.analysis_history = AnalysisHistoryTracker(get_config())
 
     def setup_graph(
         self, selected_analysts=("market", "social", "news", "kap", "fundamentals")
@@ -92,7 +97,9 @@ class GraphSetup:
         aggressive_analyst = create_aggressive_debator(self.quick_thinking_llm)
         neutral_analyst = create_neutral_debator(self.quick_thinking_llm)
         conservative_analyst = create_conservative_debator(self.quick_thinking_llm)
-        portfolio_manager_node = create_portfolio_manager(self.deep_thinking_llm)
+        portfolio_manager_node = self.analysis_history.wrap_final_node(
+            create_portfolio_manager(self.deep_thinking_llm)
+        )
 
         # Create workflow
         workflow = StateGraph(AgentState)
