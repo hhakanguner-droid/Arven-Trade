@@ -38,7 +38,20 @@ def _dummy_api_keys(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _isolate_config():
+def _isolate_analysis_history_path(tmp_path, monkeypatch):
+    """Keep Phase 11's default SQLite history out of the runner/user home."""
+    import tradingagents.default_config as default_config
+
+    monkeypatch.setitem(
+        default_config.DEFAULT_CONFIG,
+        "analysis_history_path",
+        str(tmp_path / "analysis_history.db"),
+    )
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_config(_isolate_analysis_history_path):
     """Reset the global dataflows config before and after each test.
 
     ``set_config`` merges (it never clears keys absent from the override), so a
