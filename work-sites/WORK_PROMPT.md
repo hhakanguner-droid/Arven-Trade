@@ -30,9 +30,9 @@ Do not replace the approved ARVEN design with a generic trading template. Preser
 ## Product mode: production, not demo
 ARVEN Trade is BIST/Türkiye focused. Do not add foreign exchanges or foreign-stock workflows.
 
-Remove all demo/sample/placeholder portfolio, ticker, performance, analysis, agent-decision and dashboard values from the current live site. Do not leave any visible demo badges, mock balances, fake prices, fake performance numbers, example tickers presented as if they were live, or sample analysis history.
+Remove all demo/sample/placeholder portfolio, ticker, performance, analysis, agent-decision and dashboard values from the current live site. Do not leave any visible demo badges, mock balances, fake prices, fake performance numbers, example tickers presented as if they were live, sample analysis history, or fake KAP disclosures.
 
-If the real backend has no data yet, show a clean Turkish empty state such as “Henüz analiz yok” / “Takip listesi boş” instead of fabricating values.
+If the real backend has no data yet, show a clean Turkish empty state such as “Henüz analiz yok”, “Takip listesi boş” or “Henüz KAP açıklaması yok” instead of fabricating values.
 
 Do not silently fall back to fake data when the backend is unavailable. Show the proper unavailable/error state.
 
@@ -61,6 +61,39 @@ Users must be able to:
 
 Do not ship a watchlist UI whose add button is decorative or non-functional. If the current Phase 13 backend does not yet expose a dedicated persistent watchlist endpoint, implement the safest available persistence layer inside the Work/Sites product boundary and explicitly report that persistence architecture in the completion report; do not fabricate a backend endpoint that does not exist.
 
+## KAP must exist in two product surfaces
+KAP is not only an analysis card. Add a dedicated primary navigation item named **“KAP Açıklamaları”** while also keeping KAP inside each stock analysis.
+
+### A. KAP inside Hisse Analizi
+For the stock being analyzed:
+- keep a dedicated KAP agent/card,
+- show the KAP agent interpretation in **3 to 5 complete Turkish sentences**,
+- show the latest real KAP disclosures used/relevant to that analysis when available,
+- make the source disclosure title/subject, publication date/time and official KAP link accessible,
+- clearly distinguish the source disclosure from ARVEN’s interpretation of it.
+
+Do not invent a KAP event or claim that a disclosure affected the analysis unless it exists in the real KAP data returned by the backend/history.
+
+### B. Dedicated “KAP Açıklamaları” menu
+Create a standalone chronological KAP feed. It should let the user answer: **“Bugün / bu günlerde hangi takip edilen veya analiz edilen şirket hangi KAP açıklamasını yaptı?”**
+
+The feed must:
+- group disclosures **day by day**, newest day first and newest disclosure first inside each day,
+- show publication date/time,
+- show ticker and company name when available,
+- show disclosure title/subject,
+- show concise source summary,
+- show category and importance/severity when the backend provides them,
+- show corrective-disclosure and attachment indicators when available,
+- provide a link/action to open the official KAP source,
+- support filters for date, ticker/company, category and importance/severity,
+- include quick views for “Takip Listem” and “Analiz Ettiklerim” when those scopes are available,
+- have a clean empty/unavailable state and **never populate itself with demo KAP items**.
+
+The repository already contains real KAP/watchlist alert primitives and persisted alert history. Use real backend data for the feed when exposed. The current production-safe scope is disclosures for **watchlist/followed and analyzed BIST tickers**. Do not label that as an all-BIST market-wide stream if the backend does not actually provide all listed-company disclosures.
+
+A browser-facing route such as `GET /api/arven/kap/disclosures` may be used **only when a real server/backend route is implemented behind it**. Do not invent a Phase 13 upstream endpoint in client code. If an all-BIST firehose is later required, treat it as a separate backend/data-distribution capability and report it as pending until a real market-wide source exists.
+
 ## Agent output length and readability
 The main product should expose concise AI-agent conclusions, not raw model transcripts.
 
@@ -83,14 +116,14 @@ Do not put `TRADINGAGENTS_API_TOKEN` or any backend secret into browser code, pu
 
 Use a same-origin server-side BFF/reverse proxy:
 
-`Browser -> Work/Sites same-origin server boundary -> ARVEN Trade Phase 13 API`
+`Browser -> Work/Sites same-origin server boundary -> ARVEN Trade backend API`
 
 The server-side boundary stores:
 - the ARVEN backend base URL,
-- the Phase 13 Bearer token,
+- the backend Bearer token,
 - upstream timeout/error handling.
 
-Browser-facing routes should follow the Phase 14 contract under `/api/arven/*` and proxy to the authenticated `/api/v1/*` backend endpoints.
+Browser-facing routes should follow the Phase 14 contract under `/api/arven/*` and proxy only to real authenticated backend endpoints.
 
 If this Sites environment cannot provide a server-side secret-bearing BFF/reverse proxy, do not weaken security by moving the token into the client. Build the complete UI against the Phase 14 contract, mark live backend connectivity as pending, and report that server-side proxy capability is the blocking requirement.
 
@@ -111,6 +144,7 @@ If this Sites environment cannot provide a server-side secret-bearing BFF/revers
    - Poll `/api/arven/analyses/{job_id}`.
    - On success show final decision/rating immediately.
    - Show agent explanations in 3–5 sentences each.
+   - Show KAP agent interpretation in 3–5 sentences plus the real disclosure sources used/relevant when available.
    - Show bull/bear / relevant debate summaries in 3–5 sentences per side/contribution.
    - Refresh matching history/agent cards after completion.
 
@@ -133,7 +167,15 @@ If this Sites environment cannot provide a server-side secret-bearing BFF/revers
    - Prevent duplicate entries.
    - Provide a clear empty state.
    - Allow direct transition from a watched ticker to analysis/detail.
-   - Persist safely using the available product/server architecture; do not expose secrets and do not invent nonexistent Phase 13 endpoints.
+   - Persist safely using the available product/server architecture; do not expose secrets and do not invent nonexistent backend endpoints.
+
+7. KAP Açıklamaları
+   - Dedicated primary navigation item.
+   - Day-by-day chronological real disclosure feed.
+   - Scope at minimum to followed/watchlist and analyzed BIST tickers where real backend data exists.
+   - Date/ticker/category/importance filters.
+   - Official KAP source link and source metadata.
+   - No fake all-market claim and no demo disclosures.
 
 ## Error UX
 Provide explicit, calm Turkish UI states for:
@@ -141,7 +183,7 @@ Provide explicit, calm Turkish UI states for:
 - 404 record missing,
 - 409 idempotency conflict,
 - 429 queue/capacity full,
-- 503 history temporarily unavailable,
+- 503 history/KAP source temporarily unavailable,
 - network timeout,
 - backend 5xx.
 
@@ -152,6 +194,7 @@ Never show backend stack traces or secrets.
 - Installable PWA behavior where supported.
 - Preserve the approved PC main dashboard and stock analysis hierarchy.
 - Preserve the approved mobile navigation/composition.
+- Add “KAP Açıklamaları” to desktop navigation and an appropriate mobile navigation/menu surface without breaking the approved composition.
 - Loading and polling states must not freeze navigation.
 - Back navigation must work on mobile/detail views.
 - Existing live Site URL must remain the same after publish.
@@ -167,11 +210,12 @@ When finished, report only:
 2. Confirmation that the existing Site `https://arven-trade.hhakanguner.chatgpt.site/` was updated and no replacement Site was created.
 3. Whether the Work/Sites project directly imported repo code or created a separate workspace copy.
 4. Whether server-side BFF/reverse proxy secret storage is available and configured.
-5. Which real Phase 13 endpoints are connected.
+5. Which real backend endpoints are connected.
 6. How the watchlist add/remove persistence is implemented.
 7. Confirmation that demo/sample values were removed, including any screen where removal could not be completed.
 8. Confirmation that the active/latest analyzed stock is the first prominent dashboard block.
 9. Confirmation that agent explanations and debate summaries are shown in the requested 3–5 sentence format.
-10. Which endpoints/screens remain mocked or blocked, if any.
-11. Whether GitHub-to-live-site synchronization is automatic or manual.
-12. The live site URL and the Git SHA currently represented by that live publish.
+10. Confirmation that KAP appears both in stock analysis and as a separate “KAP Açıklamaları” menu, including the actual data scope feeding that menu.
+11. Which endpoints/screens remain mocked or blocked, if any.
+12. Whether GitHub-to-live-site synchronization is automatic or manual.
+13. The live site URL and the Git SHA currently represented by that live publish.
