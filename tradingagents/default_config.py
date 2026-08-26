@@ -22,6 +22,12 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_KAP_ENABLED":          "kap_enabled",
     "TRADINGAGENTS_KAP_LOOKBACK_DAYS":    "kap_lookback_days",
     "TRADINGAGENTS_KAP_MAX_DISCLOSURES":  "kap_max_disclosures",
+    "TRADINGAGENTS_KAP_ALERTS_ENABLED":   "kap_alerts_enabled",
+    "TRADINGAGENTS_KAP_ALERT_LOOKBACK_DAYS": "kap_alert_lookback_days",
+    "TRADINGAGENTS_KAP_ALERT_MIN_SCORE":  "kap_alert_min_score",
+    "TRADINGAGENTS_KAP_ALERT_MAX_DISCLOSURES": "kap_alert_max_disclosures",
+    "TRADINGAGENTS_ALERT_HISTORY_LIMIT":  "alert_history_limit",
+    "TRADINGAGENTS_ALERT_SEEN_LIMIT":     "alert_seen_limit",
     # Provider-specific reasoning/thinking knobs (None = each provider's own
     # default). Settable here for non-interactive runs; the CLI also offers an
     # interactive choice, which is skipped when the matching var is set.
@@ -124,6 +130,23 @@ DEFAULT_CONFIG = _apply_env_overrides({
     "kap_lookback_days": 30,
     "kap_max_disclosures": 10,
     "kap_timeout_seconds": 15.0,
+    # Phase 10 watchlist / KAP event notifications. Paths are local application
+    # state; a future PWA/API layer can use the service without changing its
+    # de-duplication and importance rules.
+    "watchlist_path": (
+        os.getenv("TRADINGAGENTS_WATCHLIST_PATH")
+        or os.path.join(_TRADINGAGENTS_HOME, "watchlist.json")
+    ),
+    "alert_state_path": (
+        os.getenv("TRADINGAGENTS_ALERT_STATE_PATH")
+        or os.path.join(_TRADINGAGENTS_HOME, "alerts", "kap_alerts.json")
+    ),
+    "kap_alerts_enabled": True,
+    "kap_alert_lookback_days": 7,
+    "kap_alert_min_score": 80,
+    "kap_alert_max_disclosures": 100,
+    "alert_history_limit": 500,
+    "alert_seen_limit": 5000,
     "default_tickers": [
         "THYAO.IS", "ASELS.IS", "TUPRS.IS", "KCHOL.IS",
         "GARAN.IS", "AKBNK.IS", "EREGL.IS",

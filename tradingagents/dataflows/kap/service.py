@@ -100,9 +100,73 @@ def _significance(disclosure) -> tuple[int, datetime]:
     return score, disclosure.publish_datetime
 
 
-def _select_significant(disclosures: Iterable, limit: int) -> list:
-    ranked = sorted(disclosures, key=_significance, reverse=True)[:limit]
-    return sorted(ranked, key=lambda item: item.publish_datetime, reverse=True)
+def _priority_is_actionable(priority: tuple) -> bool:
+    """Read actionability from either supported selector-key contract.
+
+    The raw KAP key is ``(score, published_at)``. Alert polling supplies the
+    richer ``(unseen, important, significance_band, recency, score)`` tuple.
+    The leading unseen flag is *not* significance; for that contract the second
+    component is the authoritative importance flag.
+    """
+    if len(priority) >= 5:
+        return bool(priority[1])
+    if not priority:
+        return False
+    first = priority[0]
+    if isinstance(first, bool):
+        return first
+    try:
+        return float(first) > 0
+    except (TypeError, ValueError):
+        return bool(first)
+
+
+def _priority_is_unseen(priority: tuple) -> bool:
+    """Return unseen priority only for the alert-service selector contract."""
+    return bool(priority[0]) if len(priority) >= 5 else False
+
+
+def _select_significant(
+    disclosures: Iterable,
+    limit: int,
+    significance_key: Callable[[object], tuple] | None = None,
+) -> list:
+    """Select a bounded mix of unseen/fresh actionable and significant records.
+
+    For alert polling, unseen actionable records outrank already-seen actionable
+    records inside the freshness quota. This prevents a slightly newer seen
+    disclosure from permanently consuming a tight result cap while an unseen
+    actionable disclosure remains just behind it.
+    """
+    items = list(disclosures)
+    if not items:
+        return []
+
+    key = significance_key or _significance
+    scored = [(item, key(item)) for item in items]
+    actionable = [pair for pair in scored if _priority_is_actionable(pair[1])]
+
+    if not actionable:
+        return sorted(items, key=lambda item: item.publish_datetime, reverse=True)[:limit]
+
+    newest_actionable = sorted(
+        actionable,
+        key=lambda pair: (
+            _priority_is_unseen(pair[1]),
+            pair[0].publish_datetime,
+        ),
+        reverse=True,
+    )
+    recent_quota = min(limit, max(1, (limit + 1) // 2))
+    selected = [item for item, _ in newest_actionable[:recent_quota]]
+    selected_identity = {id(item) for item in selected}
+
+    if len(selected) < limit:
+        remaining = [pair for pair in scored if id(pair[0]) not in selected_identity]
+        ranked = sorted(remaining, key=lambda pair: pair[1], reverse=True)
+        selected.extend(item for item, _ in ranked[: limit - len(selected)])
+
+    return sorted(selected, key=lambda item: item.publish_datetime, reverse=True)
 
 
 class KapService:
@@ -127,6 +191,8 @@ class KapService:
         *,
         lookback_days: int = 30,
         include_attachments: bool = True,
+        significance_key: Callable[[object], tuple] | None = None,
+        summary_limit: int | None = 600,
     ) -> KapDisclosureResult:
         today = date.today()
         end = _date_string(end_date, today)
@@ -140,6 +206,10 @@ class KapService:
             raise ValueError("start_date must not be after end_date")
         if isinstance(max_disclosures, bool) or not 1 <= int(max_disclosures) <= 100:
             raise ValueError("max_disclosures must be between 1 and 100")
+        if summary_limit is not None:
+            if isinstance(summary_limit, bool) or int(summary_limit) < 1:
+                raise ValueError("summary_limit must be a positive integer or None")
+            summary_limit = int(summary_limit)
         limit = int(max_disclosures)
 
         try:
@@ -159,15 +229,19 @@ class KapService:
                 try:
                     company_oid = client.find_company(kap_ticker).oid
                 except CompanyNotFoundError:
-                    # KAP changed the listed-company member type/schema in 2026;
-                    # kap-client 1.x can therefore miss valid IGS companies.
                     company_oid = self.company_resolver(kap_ticker)
                     if company_oid is None:
                         raise
                 raw = client.fetch_disclosures(company_oid, start, end)
-                selected = _select_significant(raw, limit)
+                selected = _select_significant(raw, limit, significance_key)
                 mapped = tuple(
-                    self._map_disclosure(client, item, kap_ticker, include_attachments)
+                    self._map_disclosure(
+                        client,
+                        item,
+                        kap_ticker,
+                        include_attachments,
+                        summary_limit,
+                    )
                     for item in selected
                 )
             return KapDisclosureResult(
@@ -213,7 +287,13 @@ class KapService:
             )
 
     @staticmethod
-    def _map_disclosure(client, item, ticker: str, include_attachments: bool) -> KapDisclosure:
+    def _map_disclosure(
+        client,
+        item,
+        ticker: str,
+        include_attachments: bool,
+        summary_limit: int | None = 600,
+    ) -> KapDisclosure:
         attachments: tuple[KapAttachment, ...] = ()
         if include_attachments and item.has_attachment:
             try:
@@ -223,6 +303,7 @@ class KapService:
                 )
             except Exception as exc:  # noqa: BLE001 - metadata enrichment is optional
                 logger.info("KAP attachment metadata unavailable for %s: %s", item.index, exc)
+        summary = item.summary if summary_limit is None else item.summary[:summary_limit]
         return KapDisclosure(
             published_at=item.publish_datetime,
             company=item.company_name,
@@ -233,7 +314,7 @@ class KapService:
             has_attachment=item.has_attachment,
             is_corrective=item.is_corrective,
             disclosure_id=item.index,
-            summary=item.summary[:600],
+            summary=summary,
             attachments=attachments,
         )
 
