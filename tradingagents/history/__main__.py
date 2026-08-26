@@ -16,22 +16,39 @@ def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2, default=str)
 
 
+def _default_db_path() -> str:
+    return str(
+        DEFAULT_CONFIG.get(
+            "analysis_history_path",
+            str(Path.home() / ".tradingagents" / "history" / "analysis_history.db"),
+        )
+    )
+
+
+def _add_db_argument(parser: argparse.ArgumentParser, *, subcommand: bool = False) -> None:
+    # argparse normally accepts global options only before the subcommand. Add
+    # the same option to each subparser with a suppressed default so both of
+    # these work without one silently overriding the other:
+    #   history --db X list
+    #   history list --db X
+    default = argparse.SUPPRESS if subcommand else _default_db_path()
+    parser.add_argument(
+        "--db",
+        default=default,
+        help="SQLite history database path.",
+    )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m tradingagents.history",
         description="Query ARVEN/TradingAgents analysis history and realized performance.",
     )
-    parser.add_argument(
-        "--db",
-        default=DEFAULT_CONFIG.get(
-            "analysis_history_path",
-            str(Path.home() / ".tradingagents" / "history" / "analysis_history.db"),
-        ),
-        help="SQLite history database path.",
-    )
+    _add_db_argument(parser)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     list_parser = subparsers.add_parser("list", help="List stored analyses.")
+    _add_db_argument(list_parser, subcommand=True)
     list_parser.add_argument("--ticker")
     list_parser.add_argument("--limit", type=int, default=20)
 
@@ -39,6 +56,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "compare",
         help="Return the most recent analyses for one ticker.",
     )
+    _add_db_argument(compare_parser, subcommand=True)
     compare_parser.add_argument("--ticker", required=True)
     compare_parser.add_argument("--count", type=int, default=2)
 
@@ -46,12 +64,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "performance",
         help="Summarize realized 1/5/20-session performance.",
     )
+    _add_db_argument(perf_parser, subcommand=True)
     perf_parser.add_argument("--ticker")
 
     resolve_parser = subparsers.add_parser(
         "resolve",
         help="Backfill missing realized-performance horizons using market data.",
     )
+    _add_db_argument(resolve_parser, subcommand=True)
     resolve_parser.add_argument("--ticker")
     resolve_parser.add_argument("--limit", type=int, default=10)
 
