@@ -56,3 +56,19 @@ class SecretRedactionFilter(logging.Filter):
         record.msg = redact_sensitive_text(message, environ=self.environ)
         record.args = ()
         return True
+
+
+def install_secret_redaction() -> None:
+    """Install process-wide log-record redaction once, preserving any prior factory."""
+    current_factory = logging.getLogRecordFactory()
+    if getattr(current_factory, "_arven_secret_redaction", False):
+        return
+
+    def redacting_factory(*args, **kwargs):
+        record = current_factory(*args, **kwargs)
+        record.msg = redact_sensitive_text(record.getMessage())
+        record.args = ()
+        return record
+
+    redacting_factory._arven_secret_redaction = True  # type: ignore[attr-defined]
+    logging.setLogRecordFactory(redacting_factory)
