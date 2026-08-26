@@ -5,6 +5,11 @@ not require the web stack.
 """
 
 from .core import AnalysisService
-from .jobs import AnalysisJobStore, IdempotencyConflict
+from .jobs import AnalysisJobStore, IdempotencyConflict, QueueCapacityExceeded
 
-__all__ = ["AnalysisJobStore", "AnalysisService", "IdempotencyConflict"]
+__all__ = [
+    "AnalysisJobStore",
+    "AnalysisService",
+    "IdempotencyConflict",
+    "QueueCapacityExceeded",
+]
