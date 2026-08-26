@@ -20,14 +20,19 @@ class AnalysisService:
         store: AnalysisJobStore,
         *,
         max_workers: int = 1,
+        max_pending_jobs: int = 100,
+        max_terminal_jobs: int = 5000,
         recover_incomplete: bool = True,
     ):
         self.runtime = runtime
         self.store = store
+        self.max_pending_jobs = max(1, int(max_pending_jobs))
+        self.max_terminal_jobs = max(1, int(max_terminal_jobs))
         self._executor = ThreadPoolExecutor(
             max_workers=max(1, int(max_workers)),
             thread_name_prefix="arven-analysis",
         )
+        self.store.prune_terminal(max_terminal_jobs=self.max_terminal_jobs)
         if recover_incomplete:
             for job_id in self.store.recover_incomplete():
                 self._schedule(job_id)
@@ -51,6 +56,7 @@ class AnalysisService:
         job, created = self.store.create_or_get(
             request,
             idempotency_key=idempotency_key,
+            max_pending_jobs=self.max_pending_jobs,
         )
         if created or job["status"] == "queued":
             self._schedule(str(job["id"]))
@@ -88,8 +94,10 @@ class AnalysisService:
                 type(exc).__name__,
                 redact_sensitive_text(exc),
             )
-            return
-        self.store.finish_success(job_id, self._result_payload(result))
+        else:
+            self.store.finish_success(job_id, self._result_payload(result))
+        finally:
+            self.store.prune_terminal(max_terminal_jobs=self.max_terminal_jobs)
 
     def get(self, job_id: str) -> dict[str, Any] | None:
         return self.store.get(job_id)
@@ -99,7 +107,11 @@ class AnalysisService:
         return {
             "status": "ok",
             "runtime": runtime_health,
-            "jobs": self.store.counts(),
+            "jobs": {
+                **self.store.counts(),
+                "max_pending": self.max_pending_jobs,
+                "max_terminal": self.max_terminal_jobs,
+            },
         }
 
     def close(self) -> None:
