@@ -208,7 +208,10 @@ class AnalysisHistoryTracker:
 
                 for row in rows:
                     completed = {
-                        int(item["horizon_days"]) for item in row.get("performance", [])
+                        int(item["horizon_days"])
+                        for item in row.get("performance", [])
+                        if item.get("benchmark_return") is not None
+                        and item.get("alpha_return") is not None
                     }
                     missing = tuple(h for h in self.horizons if h not in completed)
                     if not missing:
