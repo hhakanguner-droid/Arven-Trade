@@ -1,8 +1,8 @@
-from concurrent.futures import ThreadPoolExecutor
 import time
+from concurrent.futures import ThreadPoolExecutor
 
-from fastapi.testclient import TestClient
 import pytest
+from fastapi.testclient import TestClient
 
 from tradingagents.service.api import create_app
 from tradingagents.service.core import AnalysisService
@@ -126,7 +126,11 @@ def test_all_private_api_surfaces_require_bearer_auth(tmp_path):
             ),
         ]
         for method, path, payload in requests:
-            response = getattr(client, method)(path, json=payload) if payload else getattr(client, method)(path)
+            response = (
+                getattr(client, method)(path, json=payload)
+                if payload
+                else getattr(client, method)(path)
+            )
             assert response.status_code == 401, path
 
         authorized = client.get(
