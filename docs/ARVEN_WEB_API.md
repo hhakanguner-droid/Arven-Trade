@@ -17,9 +17,13 @@ Authentication is fail-closed: `/api/v1/*` requires `Authorization: Bearer <toke
 ## Endpoints
 
 - `GET /healthz` — minimal process liveness.
-- `GET /api/v1/health` — authenticated operational readiness and queue counts.
+- `GET /api/v1/health` — authenticated operational readiness, history availability and queue counts.
 - `POST /api/v1/analyses` — submit a BIST analysis and receive a persistent job immediately.
 - `GET /api/v1/analyses/{job_id}` — poll queued/running/succeeded/failed state.
+- `GET /api/v1/history?ticker=THYAO&limit=50` — compact PWA-ready Phase 11 analysis cards.
+- `GET /api/v1/history/{analysis_id}` — detailed stored analysis and agent evidence.
+- `GET /api/v1/compare/THYAO?count=2` — latest analyses for deterministic side-by-side comparison.
+- `GET /api/v1/performance?ticker=THYAO` — realized raw/benchmark/alpha performance summary.
 
 Example request:
 
@@ -31,9 +35,15 @@ Example request:
 }
 ```
 
-Bare BIST tickers are normalized to `.IS`; foreign suffixes are rejected. Future trade dates and non-finite/negative cost estimates are rejected before a job is created.
+Bare BIST tickers are normalized to `.IS`; foreign suffixes are rejected. Future trade dates and non-finite/negative cost estimates are rejected before a job is created. The same BIST normalization is applied to history, compare and performance queries.
 
 For retries from browsers or reverse proxies, send a stable `Idempotency-Key`. Reusing the key for the identical request returns the same job; reusing it for different input returns HTTP 409.
+
+## PWA history payloads
+
+History list/compare endpoints intentionally do not dump the entire long-form graph state into dashboard requests. They return bounded deterministic cards with rating, signal, entry/benchmark metadata, performance points, a compact final-decision summary and short Market/Sentiment/News/KAP/Fundamentals/Trader/Bull/Bear/Risk snippets when those fields exist.
+
+`GET /api/v1/history/{analysis_id}` is the explicit drill-down surface and includes the stored Phase 11 state plus the full final decision. If Phase 11 history is disabled or its store cannot be opened, analysis submission remains available while history endpoints return HTTP 503 and `/api/v1/health` reports `history.available=false`.
 
 ## Queue bounds and persistence
 
