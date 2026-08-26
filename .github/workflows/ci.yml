@@ -10,6 +10,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  phase13:
+    name: phase13 web API gate (py3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Phase 13 web stack
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,web]"
+      - name: Run Phase 13 web API tests
+        run: pytest -q tests/test_web_api_phase13.py
+      - name: Lint Phase 13 surface
+        run: |
+          ruff check \
+            tradingagents/service \
+            tests/test_web_api_phase13.py
+
   phase12:
     name: phase12 production hardening gate (py3.12)
     runs-on: ubuntu-latest
