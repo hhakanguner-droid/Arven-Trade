@@ -54,15 +54,19 @@ class GraphSetup:
         deep_thinking_llm: Any,
         tool_nodes: dict[str, ToolNode],
         conditional_logic: ConditionalLogic,
+        config: dict[str, Any] | None = None,
     ):
-        """Initialize with required components."""
+        """Initialize with required components and the owning graph config."""
         self.quick_thinking_llm = quick_thinking_llm
         self.deep_thinking_llm = deep_thinking_llm
         self.tool_nodes = tool_nodes
         self.conditional_logic = conditional_logic
-        # TradingAgentsGraph calls set_config() before constructing GraphSetup,
-        # so this snapshot includes per-run overrides rather than only defaults.
-        self.analysis_history = AnalysisHistoryTracker(get_config())
+        # Normal TradingAgentsGraph callers pass their exact per-instance config.
+        # Keep get_config() only as a backwards-compatible fallback for direct
+        # GraphSetup construction so one graph cannot inherit another graph's
+        # global config accidentally.
+        history_config = config if config is not None else get_config()
+        self.analysis_history = AnalysisHistoryTracker(history_config)
 
     def setup_graph(
         self, selected_analysts=("market", "social", "news", "kap", "fundamentals")
