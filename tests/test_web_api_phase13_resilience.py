@@ -75,6 +75,32 @@ def test_idempotent_replay_bypasses_full_queue_without_duplicate_work(tmp_path):
         )
 
 
+def test_service_idempotent_replays_schedule_only_once(tmp_path, monkeypatch):
+    service = AnalysisService(
+        _Runtime(),
+        AnalysisJobStore(tmp_path / "jobs.db"),
+        recover_incomplete=False,
+    )
+    scheduled = []
+    monkeypatch.setattr(service, "_schedule", scheduled.append)
+    try:
+        first = service.submit(
+            "THYAO.IS",
+            "2026-08-26",
+            idempotency_key="executor-dedup",
+        )
+        for _ in range(20):
+            replay = service.submit(
+                "THYAO.IS",
+                "2026-08-26",
+                idempotency_key="executor-dedup",
+            )
+            assert replay["id"] == first["id"]
+        assert scheduled == [first["id"]]
+    finally:
+        service.close()
+
+
 def test_restart_requeues_interrupted_running_job_and_finishes(tmp_path):
     store = AnalysisJobStore(tmp_path / "jobs.db")
     job, created = store.create_or_get(
