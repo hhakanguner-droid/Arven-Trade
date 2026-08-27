@@ -6,6 +6,7 @@
   "backend_contract_phase": 13,
   "backend_baseline_commit": "44a72f6f64dcb249e7ff0c36ae5f51031e8dd881",
   "market_scope": "BIST/Turkiye",
+  "existing_site_url": "https://arven-trade.hhakanguner.chatgpt.site/",
   "visual_sources": [
     "ARVEN_TRADE_PC_Mobil_PWA_Mockuplari.pdf",
     "ARVEN_TRADE_PC_Ana_Pano.png",
@@ -14,9 +15,30 @@
     "ARVEN_TRADE_Splash_Mockup.png",
     "ARVEN_TRADE_Logo.png"
   ],
+  "deployment": {
+    "mode": "sites_hosted_fullstack",
+    "update_existing_site": true,
+    "create_replacement_site": false,
+    "separate_backend_deployment_required": false,
+    "external_phase13_https_url_required": false,
+    "tradingagents_api_token_required_for_sites_local_calls": false,
+    "phase13_api_is_behavioral_contract": true,
+    "sites_server_routes_required": true,
+    "python_runtime_may_require_sites_adapter": true,
+    "adapter_language_preference": "typescript",
+    "must_not_fake_unsupported_runtime_behavior": true,
+    "durable_storage": "D1",
+    "object_storage": "R2_when_needed",
+    "hosted_secrets_supported": true,
+    "hosted_secrets_required_for_provider_credentials": true,
+    "ask_user_only_for_genuinely_missing_provider_secret": true,
+    "record_saved_version_git_sha": true,
+    "deploy_to_existing_url": true
+  },
   "security": {
     "browser_bearer_token_allowed": false,
     "same_origin_server_boundary_required": true,
+    "sites_local_server_calls_need_internal_bearer_token": false,
     "client_secret_storage_forbidden": [
       "javascript_bundle",
       "service_worker",
@@ -24,13 +46,14 @@
       "indexedDB",
       "client_visible_env",
       "html"
-    ]
+    ],
+    "provider_secrets_location": "Sites hosted secrets"
   },
-  "upstream": {
+  "phase13_behavior_contract": {
     "public": [
       {"method": "GET", "path": "/healthz"}
     ],
-    "authenticated": [
+    "reference_routes": [
       {"method": "GET", "path": "/api/v1/health"},
       {"method": "POST", "path": "/api/v1/analyses", "forward_headers": ["Idempotency-Key"]},
       {"method": "GET", "path": "/api/v1/analyses/{job_id}"},
@@ -41,13 +64,13 @@
     ]
   },
   "browser_routes": [
-    {"method": "GET", "path": "/api/arven/health", "upstream": "/api/v1/health"},
-    {"method": "POST", "path": "/api/arven/analyses", "upstream": "/api/v1/analyses"},
-    {"method": "GET", "path": "/api/arven/analyses/{job_id}", "upstream": "/api/v1/analyses/{job_id}"},
-    {"method": "GET", "path": "/api/arven/history", "upstream": "/api/v1/history"},
-    {"method": "GET", "path": "/api/arven/history/{analysis_id}", "upstream": "/api/v1/history/{analysis_id}"},
-    {"method": "GET", "path": "/api/arven/compare/{ticker}", "upstream": "/api/v1/compare/{ticker}"},
-    {"method": "GET", "path": "/api/arven/performance", "upstream": "/api/v1/performance"}
+    {"method": "GET", "path": "/api/arven/health", "implementation": "sites_server_route", "behavior_reference": "/api/v1/health"},
+    {"method": "POST", "path": "/api/arven/analyses", "implementation": "sites_server_route", "behavior_reference": "/api/v1/analyses"},
+    {"method": "GET", "path": "/api/arven/analyses/{job_id}", "implementation": "sites_server_route", "behavior_reference": "/api/v1/analyses/{job_id}"},
+    {"method": "GET", "path": "/api/arven/history", "implementation": "sites_server_route", "behavior_reference": "/api/v1/history"},
+    {"method": "GET", "path": "/api/arven/history/{analysis_id}", "implementation": "sites_server_route", "behavior_reference": "/api/v1/history/{analysis_id}"},
+    {"method": "GET", "path": "/api/arven/compare/{ticker}", "implementation": "sites_server_route", "behavior_reference": "/api/v1/compare/{ticker}"},
+    {"method": "GET", "path": "/api/arven/performance", "implementation": "sites_server_route", "behavior_reference": "/api/v1/performance"}
   ],
   "analysis_states": ["queued", "running", "succeeded", "failed"],
   "required_error_states": [401, 403, 404, 409, 429, 503, 500],
@@ -113,8 +136,9 @@
     ],
     "filters": ["date", "ticker", "category", "severity"],
     "browser_route_target": "/api/arven/kap/disclosures",
-    "browser_route_requires_real_upstream": true,
-    "market_wide_all_bist_requires_backend_feed": true,
+    "browser_route_requires_real_server_implementation": true,
+    "external_upstream_required": false,
+    "market_wide_all_bist_requires_real_feed": true,
     "must_not_fake_market_wide_feed": true,
     "must_not_show_demo_disclosures": true
   },
