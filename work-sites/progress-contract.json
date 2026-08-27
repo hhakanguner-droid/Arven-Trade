@@ -1,0 +1,55 @@
+{
+  "phase": "14-hotfix-progress-stale-jobs",
+  "states": [
+    "queued",
+    "running",
+    "succeeded",
+    "failed"
+  ],
+  "timeouts_seconds": {
+    "heartbeat_interval": 15,
+    "progress_stall": 300,
+    "analysis_hard": 900
+  },
+  "progress_fields": [
+    "current_agent",
+    "progress_percent",
+    "completed_agents_json",
+    "heartbeat_at",
+    "progress_at",
+    "started_at",
+    "deadline_at",
+    "stale_after_at"
+  ],
+  "agents": [
+    "Piyasa Analisti",
+    "Duyarlılık Analisti",
+    "Haber Analisti",
+    "Temel Analist",
+    "KAP Araştırmacısı",
+    "Boğa Görüş Araştırmacısı",
+    "Ayı Görüş Araştırmacısı",
+    "Risk Yöneticisi",
+    "İşlem (Trader) Ajanı"
+  ],
+  "error_contract": {
+    "AnalysisStalled": "Analiz ilerlemesi zaman aşımına uğradı.",
+    "AnalysisTimeout": "Analiz maksimum çalışma süresini aştı.",
+    "AnalysisInterrupted": "Analiz sunucu yeniden başlatıldığı için kesildi."
+  },
+  "rules": {
+    "fake_timer_progress_forbidden": true,
+    "heartbeat_must_not_extend_progress_stall": true,
+    "late_success_must_not_overwrite_terminal": true,
+    "terminal_jobs_must_not_requeue": true,
+    "sites_provider_calls_must_be_abortable": true,
+    "raw_chain_of_thought_forbidden": true
+  },
+  "regression_job": {
+    "id": "3515bb3a654c4b64afe4da81cb20ec3b",
+    "ticker": "GARAN.IS",
+    "final_status": "failed",
+    "final_error_type": "AnalysisCancelled",
+    "final_updated_at": "2026-08-27T09:18:45.349Z"
+  }
+}

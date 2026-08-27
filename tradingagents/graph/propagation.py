@@ -14,6 +14,10 @@ class Propagator:
     def __init__(self, max_recur_limit=100):
         """Initialize with configuration parameters."""
         self.max_recur_limit = max_recur_limit
+        # Runtime consumers (notably the web service) can install short-lived
+        # callbacks to observe real LangGraph node boundaries without changing
+        # prompts or exposing model reasoning.
+        self.callbacks: list[Any] = []
 
     def create_initial_state(
         self,
@@ -73,12 +77,14 @@ class Propagator:
         """Get arguments for the graph invocation.
 
         Args:
-            callbacks: Optional list of callback handlers for tool execution tracking.
-                       Note: LLM callbacks are handled separately via LLM constructor.
+            callbacks: Optional list of callback handlers for tool/node progress tracking.
+                When omitted, short-lived runtime callbacks installed on this
+                Propagator are used.
         """
         config = {"recursion_limit": self.max_recur_limit}
-        if callbacks:
-            config["callbacks"] = callbacks
+        effective_callbacks = self.callbacks if callbacks is None else callbacks
+        if effective_callbacks:
+            config["callbacks"] = list(effective_callbacks)
         return {
             "stream_mode": "values",
             "config": config,

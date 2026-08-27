@@ -24,4 +24,22 @@ Bu kayıt, canlı Sites ortamında yapılan dar kapsamlı operasyonel düzeltmel
 
 ### Takip notu
 
-Bu olay, `running` job kayıtlarının aktif execution ile ayrıştırılabilmesi için ileride heartbeat/progress ve stale-job watchdog/timeout mekanizması eklenmesi gerektiğini gösterdi. Bu kayıt yalnızca mevcut operasyonel müdahaleyi belgeler; takip geliştirmesi bu committe yapılmamıştır.
+Bu olay, `running` job kayıtlarının aktif execution ile ayrıştırılabilmesi için ileride heartbeat/progress ve stale-job watchdog/timeout mekanizması eklenmesi gerektiğini gösterdi. Bu kayıt yalnızca mevcut operasyonel müdahaleyi belgeler.
+
+## 2026-08-27 — Kalıcı koruma ve gerçek ajan ilerlemesi referans implementasyonu
+
+GARAN olayının ardından `feature/work-sites-phase14` üzerinde Phase 13 Python davranış referansı için kalıcı koruma hazırlandı:
+
+- analysis job şemasına additive progress/heartbeat/deadline alanları,
+- `GET /api/v1/analyses/{job_id}` yanıtına güvenli `progress` nesnesi,
+- gerçek LangGraph node boundary'lerinden dokuz kilitli ARVEN ajan adına progress mapping,
+- heartbeat ile gerçek progress sinyalinin ayrıştırılması,
+- 300 sn progress-stall ve 900 sn toplam analysis deadline varsayılanı,
+- stalled job için `failed / AnalysisStalled`,
+- hard timeout için `failed / AnalysisTimeout`,
+- terminal durumdan sonra geç gelen success/failure yazısının `status='running'` koşuluyla engellenmesi,
+- regresyon testleri,
+- Sites-native karşılık için `work-sites/HOTFIX_PROGRESS_STALE_JOBS.md`,
+- makine-okunur `work-sites/progress-contract.json`.
+
+**Önemli:** Bu GitHub değişikliği canlı ChatGPT Site'a otomatik deploy edilmiş sayılmaz. Sites canlı runtime/D1/UI tarafındaki eşdeğer değişiklik Work/Sites tarafından uygulanıp smoke test edilmeden canlı koruma tamamlanmış kabul edilmemelidir.
