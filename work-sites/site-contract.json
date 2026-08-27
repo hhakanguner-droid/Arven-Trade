@@ -62,6 +62,32 @@
     "bear",
     "risk"
   ],
+  "agent_identity_lock": {
+    "locked": true,
+    "language": "tr",
+    "replace_initial_letters_with_icons": true,
+    "allow_visible_english_agent_titles": false,
+    "agents": [
+      {"key": "market", "name": "Piyasa Analisti", "icon": "rising_chart"},
+      {"key": "sentiment", "name": "Duyarlılık Analisti", "icon": "smiley_face"},
+      {"key": "news", "name": "Haber Analisti", "icon": "newspaper"},
+      {"key": "fundamentals", "name": "Temel Analist", "icon": "pie_chart"},
+      {"key": "kap", "name": "KAP Araştırmacısı", "icon": "kap_document_megaphone"},
+      {"key": "bull", "name": "Boğa Görüş Araştırmacısı", "icon": "bull_head"},
+      {"key": "bear", "name": "Ayı Görüş Araştırmacısı", "icon": "bear_head"},
+      {"key": "risk", "name": "Risk Yöneticisi", "icon": "shield_check"},
+      {"key": "trader", "name": "İşlem (Trader) Ajanı", "icon": "target_arrow"}
+    ],
+    "icon_style": {
+      "container": "rounded_light_blue_square",
+      "default_tone": "arven_blue",
+      "bull_tone": "green",
+      "bear_tone": "red",
+      "risk_tone": "blue",
+      "trader_tone": "blue_violet",
+      "consistent_vector_pictograms": true
+    }
+  },
   "kap_feed": {
     "menu_label": "KAP Açıklamaları",
     "required": true,
