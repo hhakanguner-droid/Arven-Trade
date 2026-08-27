@@ -94,10 +94,32 @@ The repository already contains real KAP/watchlist alert primitives and persiste
 
 A browser-facing route such as `GET /api/arven/kap/disclosures` may be used **only when a real server/backend route is implemented behind it**. Do not invent a Phase 13 upstream endpoint in client code. If an all-BIST firehose is later required, treat it as a separate backend/data-distribution capability and report it as pending until a real market-wide source exists.
 
+## Locked AI agent names and icons
+The following **nine agent names and icons are approved and locked for this release**. Do not rename, translate differently, replace with English visible titles, reorder casually, or substitute the icons with initials such as M / S / N / F / B / R / T.
+
+Use these exact visible names and pictograms:
+1. **Piyasa Analisti** — rising market/chart icon.
+2. **Duyarlılık Analisti** — smiley/sentiment face icon.
+3. **Haber Analisti** — newspaper/news icon.
+4. **Temel Analist** — pie-chart/financial fundamentals icon.
+5. **KAP Araştırmacısı** — KAP document + megaphone/announcement icon.
+6. **Boğa Görüş Araştırmacısı** — bull-head icon, green emphasis.
+7. **Ayı Görüş Araştırmacısı** — bear-head icon, red emphasis.
+8. **Risk Yöneticisi** — shield/check icon.
+9. **İşlem (Trader) Ajanı** — target + arrow icon.
+
+Visual rules for these icons:
+- Replace the current blue-circle initials with actual pictogram icons.
+- Use the approved rounded light-blue icon container style from the accepted mockup.
+- Keep a consistent vector/pictogram family and visual weight across all nine agents.
+- Default icons use ARVEN blue; Boğa uses green emphasis; Ayı uses red emphasis; Risk remains blue; Trader may use blue/violet emphasis.
+- Names must remain Turkish exactly as written above. `Trader` is kept only inside the approved visible label **“İşlem (Trader) Ajanı”**.
+- These names/icons are a **canonical UI identity lock** for Phase 14. Future v2/v3 cosmetic work may refine rendering quality but must not change the identity without explicit approval.
+
 ## Agent output length and readability
 The main product should expose concise AI-agent conclusions, not raw model transcripts.
 
-For each relevant agent card — Market, Sentiment, News, KAP, Fundamentals, Trader and Risk — show the agent’s explanation/decision in **3 to 5 complete sentences**. The text must be concise, understandable Turkish, focused on the decision rationale and the most important evidence. Do not reduce meaningful agent reasoning to a one-line label, and do not dump long raw chain/model transcripts.
+For each relevant agent card — Piyasa Analisti, Duyarlılık Analisti, Haber Analisti, KAP Araştırmacısı, Temel Analist, Boğa Görüş Araştırmacısı, Ayı Görüş Araştırmacısı, Risk Yöneticisi and İşlem (Trader) Ajanı — show the agent’s explanation/decision in **3 to 5 complete sentences**. The text must be concise, understandable Turkish, focused on the decision rationale and the most important evidence. Do not reduce meaningful agent reasoning to a one-line label, and do not dump long raw chain/model transcripts.
 
 Bull/Bear and other agent debates must also be visible to the user in a compact form. **Each side / debate contribution should be summarized in 3 to 5 sentences** so the user can understand the disagreement, evidence and conclusion without reading a long transcript.
 
@@ -143,6 +165,7 @@ If this Sites environment cannot provide a server-side secret-bearing BFF/revers
    - Show `queued`, then `running`, then `succeeded` or `failed`.
    - Poll `/api/arven/analyses/{job_id}`.
    - On success show final decision/rating immediately.
+   - Show all nine locked agent identities with the approved Turkish names/icons where their result is available.
    - Show agent explanations in 3–5 sentences each.
    - Show KAP agent interpretation in 3–5 sentences plus the real disclosure sources used/relevant when available.
    - Show bull/bear / relevant debate summaries in 3–5 sentences per side/contribution.
@@ -214,7 +237,7 @@ When finished, report only:
 6. How the watchlist add/remove persistence is implemented.
 7. Confirmation that demo/sample values were removed, including any screen where removal could not be completed.
 8. Confirmation that the active/latest analyzed stock is the first prominent dashboard block.
-9. Confirmation that agent explanations and debate summaries are shown in the requested 3–5 sentence format.
+9. Confirmation that all nine locked agent names/icons are implemented exactly and that agent explanations/debate summaries are shown in the requested 3–5 sentence format.
 10. Confirmation that KAP appears both in stock analysis and as a separate “KAP Açıklamaları” menu, including the actual data scope feeding that menu.
 11. Which endpoints/screens remain mocked or blocked, if any.
 12. Whether GitHub-to-live-site synchronization is automatic or manual.
