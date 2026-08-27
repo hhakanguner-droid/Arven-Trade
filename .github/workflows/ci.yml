@@ -10,6 +10,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  phase14:
+    name: phase14 Work Sites contract gate (py3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Phase 14 test stack
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,web]"
+      - name: Validate Work Sites contract
+        run: |
+          python -m json.tool work-sites/site-contract.json > /dev/null
+          pytest -q tests/test_work_sites_contract_phase14.py
+      - name: Lint Phase 14 test surface
+        run: ruff check tests/test_work_sites_contract_phase14.py
+
   phase13:
     name: phase13 web API gate (py3.12)
     runs-on: ubuntu-latest
