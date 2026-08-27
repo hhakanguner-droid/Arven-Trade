@@ -76,6 +76,34 @@ def test_phase14_analysis_and_error_states_are_explicit():
     assert {401, 403, 404, 409, 429, 500, 503} <= set(contract["required_error_states"])
 
 
+def test_phase14_agent_names_and_icons_are_locked_for_sites():
+    lock = _contract()["agent_identity_lock"]
+    assert lock["locked"] is True
+    assert lock["language"] == "tr"
+    assert lock["replace_initial_letters_with_icons"] is True
+    assert lock["allow_visible_english_agent_titles"] is False
+
+    expected = [
+        ("market", "Piyasa Analisti", "rising_chart"),
+        ("sentiment", "Duyarlılık Analisti", "smiley_face"),
+        ("news", "Haber Analisti", "newspaper"),
+        ("fundamentals", "Temel Analist", "pie_chart"),
+        ("kap", "KAP Araştırmacısı", "kap_document_megaphone"),
+        ("bull", "Boğa Görüş Araştırmacısı", "bull_head"),
+        ("bear", "Ayı Görüş Araştırmacısı", "bear_head"),
+        ("risk", "Risk Yöneticisi", "shield_check"),
+        ("trader", "İşlem (Trader) Ajanı", "target_arrow"),
+    ]
+    actual = [(item["key"], item["name"], item["icon"]) for item in lock["agents"]]
+    assert actual == expected
+
+    style = lock["icon_style"]
+    assert style["container"] == "rounded_light_blue_square"
+    assert style["bull_tone"] == "green"
+    assert style["bear_tone"] == "red"
+    assert style["consistent_vector_pictograms"] is True
+
+
 def test_phase14_kap_is_both_analysis_card_and_daily_menu_without_fake_market_feed():
     kap = _contract()["kap_feed"]
     assert kap["menu_label"] == "KAP Açıklamaları"
