@@ -76,9 +76,9 @@ def test_get_market_snapshot_covers_every_group_and_derives_gram_altin():
 
     assert not snapshot["errors"]
     assert by_symbol["USDTRY"]["price"] == pytest.approx(34.24)
-    assert by_symbol["USDTRY"]["change_pct"] == pytest.approx(
-        (34.24 - 34.10) / 34.10 * 100, rel=1e-3
-    )
+    # The API rounds change_pct to 2 decimals, so compare against that same
+    # rounded value rather than the unrounded ratio.
+    assert by_symbol["USDTRY"]["change_pct"] == round((34.24 - 34.10) / 34.10 * 100, 2)
     assert by_symbol["XU100"]["group"] == "index"
     assert by_symbol["BTCUSDT"]["currency"] == "USD"
 
