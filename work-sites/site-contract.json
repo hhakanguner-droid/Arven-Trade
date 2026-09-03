@@ -60,7 +60,9 @@
       {"method": "GET", "path": "/api/v1/history"},
       {"method": "GET", "path": "/api/v1/history/{analysis_id}"},
       {"method": "GET", "path": "/api/v1/compare/{ticker}"},
-      {"method": "GET", "path": "/api/v1/performance"}
+      {"method": "GET", "path": "/api/v1/performance"},
+      {"method": "GET", "path": "/api/v1/market"},
+      {"method": "GET", "path": "/api/v1/price-history/{ticker}"}
     ]
   },
   "browser_routes": [
@@ -70,7 +72,9 @@
     {"method": "GET", "path": "/api/arven/history", "implementation": "sites_server_route", "behavior_reference": "/api/v1/history"},
     {"method": "GET", "path": "/api/arven/history/{analysis_id}", "implementation": "sites_server_route", "behavior_reference": "/api/v1/history/{analysis_id}"},
     {"method": "GET", "path": "/api/arven/compare/{ticker}", "implementation": "sites_server_route", "behavior_reference": "/api/v1/compare/{ticker}"},
-    {"method": "GET", "path": "/api/arven/performance", "implementation": "sites_server_route", "behavior_reference": "/api/v1/performance"}
+    {"method": "GET", "path": "/api/arven/performance", "implementation": "sites_server_route", "behavior_reference": "/api/v1/performance"},
+    {"method": "GET", "path": "/api/arven/market", "implementation": "sites_server_route", "behavior_reference": "/api/v1/market"},
+    {"method": "GET", "path": "/api/arven/price-history/{ticker}", "implementation": "sites_server_route", "behavior_reference": "/api/v1/price-history/{ticker}"}
   ],
   "analysis_states": ["queued", "running", "succeeded", "failed"],
   "required_error_states": [401, 403, 404, 409, 429, 503, 500],
@@ -141,6 +145,39 @@
     "market_wide_all_bist_requires_real_feed": true,
     "must_not_fake_market_wide_feed": true,
     "must_not_show_demo_disclosures": true
+  },
+  "markets": {
+    "menu_label": "Piyasalar",
+    "required": true,
+    "instrument_groups": ["fx", "parity", "index", "commodity", "crypto"],
+    "instruments": {
+      "fx": ["USDTRY", "EURTRY", "GBPTRY", "CHFTRY"],
+      "parity": ["EURUSD", "GBPUSD", "USDJPY"],
+      "index": ["XU100", "XU030", "XBANK", "XUSIN"],
+      "commodity": ["XAUUSD", "GRAMALTIN", "XAGUSD", "BRENT"],
+      "crypto": ["BTCUSDT", "ETHUSDT"]
+    },
+    "gramaltin_is_derived": true,
+    "gramaltin_derivation": "XAUUSD (ons, USD) * USDTRY / 31.1034768",
+    "ticker_tape_required": true,
+    "price_history_chart": {
+      "required": true,
+      "user_selects_ticker": true,
+      "quick_select_from_watchlist": true,
+      "chart_type": "line",
+      "ranges": ["1G", "1H", "1A", "6A", "1Y", "5Y"],
+      "stats_required": [
+        "last_price",
+        "daily_change_pct",
+        "period_change_pct",
+        "fifty_two_week_high_low"
+      ]
+    },
+    "browser_route_target": "/api/arven/market",
+    "price_history_browser_route_target": "/api/arven/price-history/{ticker}",
+    "per_instrument_fail_open": true,
+    "must_not_fake_prices": true,
+    "must_not_show_demo_quotes_in_production": true
   },
   "release": {
     "record_synced_git_sha": true,
