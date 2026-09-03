@@ -17,6 +17,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from tradingagents.dataflows.errors import NoMarketDataError
+from tradingagents.dataflows.market_overview import get_market_snapshot, get_price_history
 from tradingagents.history.store import AnalysisHistoryStore
 from tradingagents.operations import create_production_runtime
 from tradingagents.operations.security import redact_sensitive_text
@@ -272,5 +274,24 @@ def create_app(
             return analysis_service.performance_summary(query_ticker(ticker))
         except HistoryUnavailable as exc:
             raise history_unavailable(exc) from exc
+
+    @app.get("/api/v1/market", dependencies=[Depends(require_auth)])
+    def market_snapshot() -> dict[str, Any]:
+        return get_market_snapshot()
+
+    @app.get("/api/v1/price-history/{ticker}", dependencies=[Depends(require_auth)])
+    def price_history(
+        ticker: str,
+        range_: str = Query(
+            default="1A",
+            alias="range",
+            pattern="^(1G|1H|1A|6A|1Y|5Y)$",
+        ),
+    ) -> dict[str, Any]:
+        normalized = query_ticker(ticker)
+        try:
+            return get_price_history(normalized or ticker, range_)
+        except NoMarketDataError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     return app

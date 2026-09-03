@@ -26,6 +26,8 @@ Authentication is fail-closed: `/api/v1/*` requires `Authorization: Bearer <toke
 - `GET /api/v1/history/{analysis_id}` — detailed stored analysis and agent evidence.
 - `GET /api/v1/compare/THYAO?count=2` — latest analyses for deterministic side-by-side comparison.
 - `GET /api/v1/performance?ticker=THYAO` — realized raw/benchmark/alpha performance summary.
+- `GET /api/v1/market` — FX, parity, BIST index and commodity snapshot for the Piyasalar view.
+- `GET /api/v1/price-history/THYAO?range=1A` — chart-ready close-price series plus period/52-week stats for a chosen ticker.
 
 Example request:
 
@@ -48,6 +50,24 @@ History list/compare endpoints intentionally do not dump the entire long-form gr
 `GET /api/v1/history/{analysis_id}` is the explicit drill-down surface and includes the stored Phase 11 state plus the full final decision. If Phase 11 history is disabled or its store cannot be opened, analysis submission remains available while history endpoints return HTTP 503 and `/api/v1/health` reports `history.available=false`.
 
 A completed analysis job preserves the Portfolio Manager's full `final_trade_decision` together with its deterministic five-tier rating. The API does not replace that decision with the short rating returned by the legacy graph tuple.
+
+## Market data (Piyasalar)
+
+`GET /api/v1/market` returns FX rates (USD/EUR/GBP/CHF against TRY), cross parities (EUR/USD, GBP/USD, USD/JPY), the BIST 100/30/Bankacılık/Sınai indices and commodities (ons/gram altın, gümüş, Brent petrol) as one snapshot:
+
+```json
+{
+  "checked_at": "2026-09-03T09:14:00+00:00",
+  "quotes": [
+    {"symbol": "USDTRY", "label": "Amerikan Doları", "group": "fx", "price": 34.241, "change_pct": 0.38, "currency": "TRY"}
+  ],
+  "errors": []
+}
+```
+
+Each instrument is fetched independently: a delisted or rate-limited symbol lands in `errors` (with the Yahoo ticker and message) rather than failing the whole snapshot, mirroring the watchlist alert service's per-source status pattern. Gram Altın has no direct Turkish-market feed on Yahoo Finance, so it is derived from the ons altın (USD) quote and USDTRY rather than invented.
+
+`GET /api/v1/price-history/{ticker}?range=1A` returns a close-price series for a chart plus period and 52-week stats. `range` is one of `1G` (1 day, 5‑minute bars), `1H` (5 trading days, 15‑minute bars), `1A` (1 month, daily), `6A` (6 months, daily), `1Y` (1 year, daily) or `5Y` (5 years, weekly); the same BIST ticker normalization used elsewhere in this API applies. A ticker with no rows for the requested range returns HTTP 404.
 
 ## Queue bounds and persistence
 
