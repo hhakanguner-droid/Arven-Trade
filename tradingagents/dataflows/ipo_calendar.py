@@ -192,8 +192,12 @@ def get_ipo_detail(slug: str) -> dict:
 
     flexiskod_fields: dict[str, str] = {}
     for block in selector.css(".flexiskod"):
-        label = _joined_text(block.css("div:nth-child(1)::text").getall())
-        value = _joined_text(block.css("div:nth-child(2) ::text").getall())
+        # Explicit XPath child indices, not CSS :nth-child: cssselect's
+        # translation of ":nth-child(2) ::text" pulled in the label div's
+        # text alongside the value div's when the value had nested markup
+        # (e.g. a currency <span>), concatenating "Halka Arz Fiyatı₺136,00".
+        label = _joined_text(block.xpath("./div[1]/text()").getall())
+        value = _joined_text(block.xpath("./div[2]//text()").getall())
         if label and value:
             flexiskod_fields[label] = value
 
