@@ -62,7 +62,9 @@
       {"method": "GET", "path": "/api/v1/compare/{ticker}"},
       {"method": "GET", "path": "/api/v1/performance"},
       {"method": "GET", "path": "/api/v1/market"},
-      {"method": "GET", "path": "/api/v1/price-history/{ticker}"}
+      {"method": "GET", "path": "/api/v1/price-history/{ticker}"},
+      {"method": "GET", "path": "/api/v1/ipo-calendar"},
+      {"method": "GET", "path": "/api/v1/ipo-calendar/{slug}"}
     ]
   },
   "browser_routes": [
@@ -74,7 +76,9 @@
     {"method": "GET", "path": "/api/arven/compare/{ticker}", "implementation": "sites_server_route", "behavior_reference": "/api/v1/compare/{ticker}"},
     {"method": "GET", "path": "/api/arven/performance", "implementation": "sites_server_route", "behavior_reference": "/api/v1/performance"},
     {"method": "GET", "path": "/api/arven/market", "implementation": "sites_server_route", "behavior_reference": "/api/v1/market"},
-    {"method": "GET", "path": "/api/arven/price-history/{ticker}", "implementation": "sites_server_route", "behavior_reference": "/api/v1/price-history/{ticker}"}
+    {"method": "GET", "path": "/api/arven/price-history/{ticker}", "implementation": "sites_server_route", "behavior_reference": "/api/v1/price-history/{ticker}"},
+    {"method": "GET", "path": "/api/arven/ipo-calendar", "implementation": "sites_server_route", "behavior_reference": "/api/v1/ipo-calendar"},
+    {"method": "GET", "path": "/api/arven/ipo-calendar/{slug}", "implementation": "sites_server_route", "behavior_reference": "/api/v1/ipo-calendar/{slug}"}
   ],
   "analysis_states": ["queued", "running", "succeeded", "failed"],
   "required_error_states": [401, 403, 404, 409, 429, 503, 500],
@@ -178,6 +182,37 @@
     "per_instrument_fail_open": true,
     "must_not_fake_prices": true,
     "must_not_show_demo_quotes_in_production": true
+  },
+  "ipo_calendar": {
+    "menu_label": "Halka Arz",
+    "required": true,
+    "groups": ["pending", "completed"],
+    "group_labels": {
+      "pending": "Onay Bekleyen Halka Arzlar",
+      "completed": "Tamamlanmış Halka Arzlar"
+    },
+    "data_source": "halkaarztakvimi.com.tr",
+    "data_source_kind": "third_party_editorial_scrape",
+    "official_api_available": false,
+    "cross_check_against_kap_izahname_for_critical_fields": true,
+    "list_fields": ["slug", "name", "url", "group", "published_at", "summary"],
+    "detail_fields": [
+      "status",
+      "sector",
+      "intermediary",
+      "ticker",
+      "offer_price",
+      "subscription_dates",
+      "market_tier",
+      "allocation_method"
+    ],
+    "offer_price_is_raw_source_text": true,
+    "detail_fields_optional_per_company": true,
+    "browser_route_target": "/api/arven/ipo-calendar",
+    "detail_browser_route_target": "/api/arven/ipo-calendar/{slug}",
+    "per_group_fail_open": true,
+    "must_not_fake_listings": true,
+    "must_not_show_demo_listings_in_production": true
   },
   "release": {
     "record_synced_git_sha": true,

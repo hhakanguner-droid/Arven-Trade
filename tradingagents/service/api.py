@@ -18,6 +18,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from tradingagents.dataflows.errors import NoMarketDataError
+from tradingagents.dataflows.ipo_calendar import IPO_SLUG_PATTERN, get_ipo_calendar, get_ipo_detail
 from tradingagents.dataflows.market_overview import get_market_snapshot, get_price_history
 from tradingagents.history.store import AnalysisHistoryStore
 from tradingagents.operations import create_production_runtime
@@ -291,6 +292,19 @@ def create_app(
         normalized = query_ticker(ticker)
         try:
             return get_price_history(normalized or ticker, range_)
+        except NoMarketDataError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/v1/ipo-calendar", dependencies=[Depends(require_auth)])
+    def ipo_calendar() -> dict[str, Any]:
+        return get_ipo_calendar()
+
+    @app.get("/api/v1/ipo-calendar/{slug}", dependencies=[Depends(require_auth)])
+    def ipo_detail(slug: str) -> dict[str, Any]:
+        if not IPO_SLUG_PATTERN.fullmatch(slug):
+            raise HTTPException(status_code=422, detail="invalid IPO slug")
+        try:
+            return get_ipo_detail(slug)
         except NoMarketDataError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

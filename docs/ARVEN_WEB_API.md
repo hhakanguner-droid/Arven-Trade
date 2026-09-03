@@ -28,6 +28,8 @@ Authentication is fail-closed: `/api/v1/*` requires `Authorization: Bearer <toke
 - `GET /api/v1/performance?ticker=THYAO` — realized raw/benchmark/alpha performance summary.
 - `GET /api/v1/market` — FX, parity, BIST index and commodity snapshot for the Piyasalar view.
 - `GET /api/v1/price-history/THYAO?range=1A` — chart-ready close-price series plus period/52-week stats for a chosen ticker.
+- `GET /api/v1/ipo-calendar` — pending and completed Turkish IPO listings for the Halka Arz view.
+- `GET /api/v1/ipo-calendar/{slug}` — one company's IPO detail fields (ticker, offer price, subscription dates, etc.), when available.
 
 Example request:
 
@@ -68,6 +70,25 @@ A completed analysis job preserves the Portfolio Manager's full `final_trade_dec
 Each instrument is fetched independently: a delisted or rate-limited symbol lands in `errors` (with the Yahoo ticker and message) rather than failing the whole snapshot, mirroring the watchlist alert service's per-source status pattern. Gram Altın has no direct Turkish-market feed on Yahoo Finance, so it is derived from the ons altın (USD) quote and USDTRY rather than invented.
 
 `GET /api/v1/price-history/{ticker}?range=1A` returns a close-price series for a chart plus period and 52-week stats. `range` is one of `1G` (1 day, 5‑minute bars), `1H` (5 trading days, 15‑minute bars), `1A` (1 month, daily), `6A` (6 months, daily), `1Y` (1 year, daily) or `5Y` (5 years, weekly); the same BIST ticker normalization used elsewhere in this API applies. A ticker with no rows for the requested range returns HTTP 404.
+
+## IPO calendar (Halka Arz)
+
+There is no official free API for Turkish IPOs — KAP and Borsa İstanbul publish individual disclosures/prospectuses, not a browsable market-wide calendar. `GET /api/v1/ipo-calendar` scrapes the two public listing pages of halkaarztakvimi.com.tr (its robots.txt explicitly permits AI/search crawlers) and returns:
+
+```json
+{
+  "listings": [
+    {"slug": "uras-kimya-san-ve-tic-a-s", "name": "Uras Kimya San. ve Tic. A.Ş.", "url": "...", "group": "pending", "published_at": "2023-12-26T12:59:00+00:00", "summary": "..."}
+  ],
+  "errors": []
+}
+```
+
+`group` is `pending` (onay bekleyen) or `completed` (güncel/tamamlanmış); each list is fetched independently and a source outage for one still returns the other in `listings`, with the failure recorded in `errors`.
+
+`GET /api/v1/ipo-calendar/{slug}` fetches that one company's detail page for financial fields (`ticker`, `offer_price`, `subscription_dates`, `market_tier`, `allocation_method`, `sector`, `intermediary`, `status`). Every detail field is optional — an early-stage filing has no price yet, and a spin-off listing (e.g. a "denge fiyatı" debut) may never have a fixed offer price. `offer_price` is kept as the raw text the source shows rather than parsed into a float, because the source itself is inconsistent about decimal separators across companies. An unknown slug returns HTTP 404.
+
+This is third-party editorial content, not an official regulator feed — critical fields (approval status, price) should be cross-checked against KAP's own izahname record before being treated as authoritative.
 
 ## Queue bounds and persistence
 
